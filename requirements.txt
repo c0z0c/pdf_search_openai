@@ -24,3 +24,6 @@ pytz
 # === 개발 환경 유틸리티 (선택 사항) ===
 jupyter
 ipykernel
+
+# === Streamlit ===
+streamlit
