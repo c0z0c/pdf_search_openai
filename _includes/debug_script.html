@@ -1,0 +1,13 @@
+  var pagePath = "{{- page.path -}}";
+  var pageDir  = "{{- page.dir -}}";
+
+  var currentFolder = "{{ current_folder }}";
+  var allPages          = {{ all_pages_json | strip_newlines }};
+  var subFiles          = {{ sub_all_files | jsonify }};
+  var subFilesSorted    = {{ sub_all_files_sorted | jsonify }};
+  var subFilesPagesAll  = {{ sub_all_files_pages_all | strip_newlines }};
+  var subFilesPagesCur  = {{ sub_all_files_pages_cur | strip_newlines }};
+  
+  var curPaths          = {{ cur_paths | jsonify }};
+  var curFiles          = {{ cur_files | jsonify }};
+  var curPageFiles      = {{ cur_page_files | jsonify }};

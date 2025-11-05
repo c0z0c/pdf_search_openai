@@ -1,0 +1,83 @@
+
+  var curDir = '{{- cur_file_dir -}}';
+  var curFiles = {{- cur_files_json -}};
+  var curPages = {{- cur_pages_json -}};
+  
+  console.log('curDir:', curDir);
+  console.log('curFiles:', curFiles);
+  console.log('curPages:', curPages);
+
+  curPages.forEach(page => {
+    // curFiles에 같은 name과 path가 있는지 확인
+    const exists = curFiles.some(file => file.name === page.name && file.path === page.path);
+
+    if (!exists) {
+      // 확장자 추출
+      let extname = '';
+      if (page.name && page.name.includes('.')) {
+        extname = '.' + page.name.split('.').pop();
+      }
+
+      // basename 추출
+      let basename = page.name ? page.name.replace(/\.[^/.]+$/, '') : '';
+
+      // modified_time 처리 (page.date가 없으면 빈 문자열)
+      let modified_time = page.date || '';
+
+      // curFiles 포맷에 맞게 변환해서 추가
+      curFiles.push({
+        title: page.title || '',
+        name: page.name || '',
+        basename: page.basename,
+        extname: page.extname,
+        modified_time: page.modified_time,
+        path: page.path || '',
+        url: page.url || ''
+      });
+    }
+  });
+
+// curFiles.sort((a, b) => {
+//   // 날짜가 ISO 형식이 아니면 Date 파싱이 안 될 수 있으니, 우선 문자열 비교
+//   // 최신 날짜가 앞으로 오도록 내림차순
+//   if (!a.modified_time) return 1;
+//   if (!b.modified_time) return -1;
+//   return b.modified_time.localeCompare(a.modified_time);
+// });
+
+curFiles.sort((a, b) => {
+  // 파일명으로 한글/영문 구분하여 정렬
+  if (!a.name) return 1;
+  if (!b.name) return -1;
+  return a.name.localeCompare(b.name, 'ko-KR', { numeric: true, caseFirst: 'lower' });
+});
+
+// // 정렬 후 출력
+// curFiles.forEach(f => {
+// /*
+//       "name": "Grad-CAM_정상.png",
+//       "path": "/스프린트미션_완료/image/06_4팀_김명환/Grad-CAM_정상.png",
+//       "extname": ".png",
+//       "modified_time": "2025-08-24 12:11:59 +0900",
+//       "basename": "Grad-CAM_정상",
+// */  
+//   console.log('curfiles:', JSON.stringify(f, null, 2));
+// });
+
+  console.log('총 파일 수:', curFiles.length);
+  console.log('파일 목록:', curFiles);
+
+  var project_path = site.baseurl
+  var project_url = `https://c0z0c.github.io${project_path}`
+  var project_git_url = `https://github.com/c0z0c${project_path}/blob/${branch}/`
+  var site_url = `https://c0z0c.github.io${project_path}${curDir}`
+  var raw_url = `https://raw.githubusercontent.com/c0z0c${project_path}/${branch}${curDir}`;
+  var git_url = `https://github.com/c0z0c${project_path}/blob/${branch}${curDir}`
+  var colab_url = `https://colab.research.google.com/github/c0z0c${project_path}/blob/${branch}${curDir}`;
+
+  console.log('project_url:', project_url);
+  console.log('project_git_url:', project_git_url);
+  console.log('site_url:', site_url);
+  console.log('raw_url:', raw_url);
+  console.log('git_url:', raw_url);
+  console.log('colab_url:', colab_url);

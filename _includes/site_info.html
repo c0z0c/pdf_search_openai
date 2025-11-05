@@ -1,0 +1,116 @@
+
+{%- comment -%} 현재 페이지의 페이지 목록을 가져온다 {%- endcomment -%} 
+
+{%- comment -%}
+site.title : 사이트 제목 (_config.yml에서 설정)
+site.description : 사이트 설명
+site.url : 사이트 기본 URL
+site.baseurl : 서브디렉터리 배포 시 base URL
+site.github : GitHub Pages 관련 정보 (자동 생성)
+site.time : 빌드 시각
+site.posts : 모든 게시글(_posts 폴더)의 배열
+site.pages : 모든 페이지(.md, .html 등)의 배열
+site.static_files : 모든 정적 파일(이미지, PDF, zip 등)의 배열
+site.data : _data 폴더의 데이터
+site.collections : 모든 컬렉션 정보
+site.documents : 모든 컬렉션 문서
+site.categories : 모든 카테고리별 게시글
+site.tags : 모든 태그별 게시글
+site.config : 전체 config 값
+
+page.title : 페이지 제목 (Front Matter에서 설정)
+page.url : 페이지의 URL 경로
+page.path : 파일 시스템상의 경로
+page.dir : 파일이 위치한 디렉토리
+page.name : 파일 이름
+page.layout : 사용된 레이아웃 이름
+page.date : 게시 날짜(게시글일 경우)
+page.content : 페이지의 실제 내용(HTML로 변환됨)
+page.excerpt : 요약(게시글일 경우)
+page.categories, page.tags : 카테고리/태그(게시글일 경우
+{%- endcomment -%} 
+
+{%- capture site_json -%}
+  {
+    "title": {{ site.title | default: "" | jsonify }},
+    "description": {{ site.description | default: "" | jsonify }},
+    "url": {{ site.url | default: "" | jsonify }},
+    "baseurl": {{ site.baseurl | default: "" | jsonify }},
+    "time": {{ site.time | date: "%Y-%m-%d %H:%M:%S" | jsonify }},
+    "posts": {{ site.posts | size }},
+    "pages": {{ site.pages | size }},
+    "static_files": {{ site.static_files | size }},
+    "data": {{ site.data | size | default: 0 }},
+    "collections": {{ site.collections | size | default: 0 }},
+    "documents": {{ site.documents | size | default: 0 }},
+    "categories": {{ site.categories | size | default: 0 }},
+    "tags": {{ site.tags | size | default: 0 }},
+    "config": {{ site | size | default: 0 }}
+  }
+{%- endcapture -%}
+
+{%- capture page_json -%}
+  {
+    "title": {{ page.title | default: "" | jsonify }},
+    "url": {{ page.url | default: "" | jsonify }},
+    "path": {{ page.path | default: "" | jsonify }},
+    "dir": {{ page.dir | default: "" | jsonify }},
+    "name": {{ page.name | default: "" | jsonify }},
+    "layout": {{ page.layout | default: "" | jsonify }},
+    "date": {{ page.date | date: "%Y-%m-%d" | default: "" | jsonify }},
+    "content_length": {{ page.content | default: "" | size }},
+    "excerpt": {{ page.excerpt | default: "" | strip_html | truncate: 200 | jsonify }},
+    "categories": {{ page.categories | default: array | jsonify }},
+    "tags": {{ page.tags | default: array | jsonify }}
+  }
+{%- endcapture -%}
+
+{%- assign all_files = site.static_files -%}
+{%- assign all_pages = site.pages -%}
+
+{%- capture all_files_json -%}
+[
+{%- for f in all_files -%}
+  {
+    "title": {{ f.basename | default: "" | jsonify }},
+    "name": {{ f.name | default: "" | jsonify }},
+    "basename": {{ f.basename | default: "" | jsonify }},
+    "extname": {{ f.extname | default: "" | jsonify }},
+    "modified_time": {{ f.modified_time | date: "%Y-%m-%d %H:%M:%S" | default: "" | jsonify }},
+    "path": {{ f.path | default: "" | jsonify }},
+    "url": {{ f.url | default: "" | jsonify }}
+  }{%- unless forloop.last -%},{%- endunless -%}
+{%- endfor -%}
+]
+{%- endcapture -%}
+
+{%- capture all_pages_json -%}
+[
+{%- for p in all_pages -%}
+{%- assign f_path = "/" | append: p.path -%}
+  {
+    "title": {{ p.title | default: "" | jsonify }},
+    "name": {{ p.name | default: "" | jsonify }},
+    "basename": {{ p.name | remove: ".md" | default: "" | jsonify }},
+    "extname": {{ ".md" | jsonify }},
+    "modified_time": {{ p.date | date: "%Y-%m-%d 00:00:00" | default: "" | jsonify }},
+    "url": {{ p.url | default: "" | jsonify }},
+    "path": {{ f_path | default: "" | jsonify }},
+    "dir": {{ p.dir | default: "" | jsonify }},
+    "layout": {{ p.layout | default: "" | jsonify }},
+    "date": {{ p.date | date: "%Y-%m-%d" | default: "" | jsonify }},
+    "excerpt": {{ p.excerpt | default: "" | strip_html | truncate: 100 | jsonify }},
+    "categories": {{ p.categories | default: array | jsonify }},
+    "tags": {{ p.tags | default: array | jsonify }}
+  }{%- unless forloop.last -%},{%- endunless -%}
+{%- endfor -%}
+]
+{% endcapture %}
+  
+var site = {{ site_json }};
+var page = {{ page_json }};
+
+var allFiles = {{ all_files_json }};
+var allPages = {{ all_pages_json }};
+
+

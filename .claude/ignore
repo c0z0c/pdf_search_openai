@@ -1,0 +1,101 @@
+# Claude가 무시할 파일 및 폴더
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 가상환경
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 환경 변수 및 설정
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+
+# 로그
+*.log
+logs/
+
+# 데이터 및 캐시
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+.pytest_cache/
+
+# Vector DB
+vector_db/
+*.faiss
+*.pkl
+*.index
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Git
+.git/
+.gitignore
+
+# 임시 파일
+tmp/
+temp/
+*.tmp
+
+# 모델 및 대용량 파일
+model/
+models/
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# 출력 파일
+output/
+outputs/
+results/
+
+# 문서 원본 (PDF 등)
+data/*.pdf
+documents/*.pdf
+
+# 기타 프로젝트 외부 폴더
+../DACON/
+../Learning Daily/
+../실습/
+../테스트/

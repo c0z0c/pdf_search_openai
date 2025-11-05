@@ -1,0 +1,237 @@
+
+// 파일 아이콘 및 타입 결정 함수
+  function getFileInfo(extname) {
+    switch(extname.toLowerCase()) {
+      case '.ipynb':
+        return { icon: '📓', type: 'Jupyter Notebook' };
+      case '.py':
+        return { icon: '🐍', type: 'Python 파일' };
+      case '.md':
+        return { icon: '📝', type: 'Markdown 문서' };
+      case '.json':
+        return { icon: '⚙️', type: 'JSON 설정' };
+      case '.zip':
+        return { icon: '📦', type: '압축 파일' };
+      case '.png':
+      case '.jpg':
+      case '.jpeg':
+        return { icon: '🖼️', type: '이미지 파일' };
+      case '.csv':
+        return { icon: '📊', type: '데이터 파일' };
+      case '.pdf':
+        return { icon: '📄', type: 'PDF 문서' };
+      case '.docx':
+        return { icon: '📝', type: 'Word 문서' };
+      case '.pptx':
+        return { icon: '📊', type: 'PowerPoint 문서' };
+      case '.xlsx':
+        return { icon: '📈', type: 'Excel 문서' };
+      case '.hwp':
+        return { icon: '📄', type: 'HWP 문서' };
+      default:
+        return { icon: '📄', type: '파일' };
+    }
+  }
+
+  // 온라인 뷰어로 파일 보기 함수
+  function openGoogleSheetsViewer(fileName) {
+    const githubRawUrl = `${raw_url}${fileName}`;
+    // Google Sheets Import 기능 사용
+    const googleSheetsUrl = `https://docs.google.com/spreadsheets/d/e/2PACX-1vT7fUCH9Z_pX8K2vJ7Z3uE4fUCH9Z_pX8K2vJ7Z3uE4/pubhtml?embedded=true&url=${encodeURIComponent(githubRawUrl)}`;
+    window.open(googleSheetsUrl, '_blank');
+  }
+
+  // CSV 뷰어 함수
+  function openCSVViewer(fileName) {
+    const modal = createViewerModal(`CSV 뷰어 - ${fileName}`);
+    const content = modal.querySelector('.viewer-content');
+    
+    fetch(`${raw_url}${fileName}`)
+      .then(response => response.text())
+      .then(data => {
+        const rows = data.split('\n').map(row => row.split(','));
+        let html = '<table border="1" style="border-collapse: collapse; width: 100%;">';
+        rows.forEach((row, index) => {
+          html += '<tr>';
+          row.forEach(cell => {
+            const tag = index === 0 ? 'th' : 'td';
+            html += `<${tag} style="padding: 8px; border: 1px solid #ddd;">${cell.trim()}</${tag}>`;
+          });
+          html += '</tr>';
+        });
+        html += '</table>';
+        content.innerHTML = html;
+      })
+      .catch(error => {
+        content.innerHTML = `<p>CSV 파일을 로드할 수 없습니다: ${error.message}</p>`;
+      });
+  }
+
+  // JSON 뷰어 함수
+  function openJSONViewer(fileName) {
+    const modal = createViewerModal(`JSON 뷰어 - ${fileName}`);
+    const content = modal.querySelector('.viewer-content');
+    
+    fetch(`${raw_url}${fileName}`)
+      .then(response => response.json())
+      .then(data => {
+        content.innerHTML = `<pre style="background: #f5f5f5; padding: 20px; border-radius: 5px; overflow: auto;">${JSON.stringify(data, null, 2)}</pre>`;
+      })
+      .catch(error => {
+        content.innerHTML = `<p>JSON 파일을 로드할 수 없습니다: ${error.message}</p>`;
+      });
+  }
+
+  // 모달 생성 함수
+  function createViewerModal(title) {
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+      background: rgba(0,0,0,0.8); z-index: 1000; display: flex; 
+      align-items: center; justify-content: center;
+    `;
+    
+    modal.innerHTML = `
+      <div style="background: white; width: 90%; height: 90%; border-radius: 10px; overflow: hidden;">
+        <div style="background: #f0f0f0; padding: 15px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="margin: 0;">${title}</h3>
+          <button onclick="this.closest('div[style*=\"position: fixed\"]').remove()" style="background: #ff5f56; color: white; border: none; border-radius: 50%; width: 30px; height: 30px; cursor: pointer;">×</button>
+        </div>
+        <div class="viewer-content" style="padding: 20px; height: calc(100% - 70px); overflow: auto;">
+          <p>로딩 중...</p>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    return modal;
+  }  
+
+    // 파일 액션 버튼 생성 함수
+  function getFileActions(file) {
+    const fileName = file.name;
+    const fileExt = file.extname.toLowerCase();
+    const githubRawUrl = `${raw_url}${fileName}`;
+    
+    let actions = '';
+    
+    // Markdown 파일 처리
+    if (fileExt === '.md' && fileName !== 'index.md') {
+      const mdName = fileName.replace('.md', '');
+      actions += `<a href="${site_url}${mdName}" class="file-action" title="렌더링된 페이지 보기">🌐</a>`;
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 원본 보기" target="_blank">📖</a>`;
+    } 
+    // Jupyter Notebook 처리
+    else if (fileExt === '.ipynb') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+      actions += `<a href="${colab_url}${fileName}" class="file-action" title="Colab에서 열기" target="_blank">🚀</a>`;
+      // NBViewer 추가
+      actions += `<a href="https://nbviewer.org/github/${git_url.split('github.com/')[1].replace('/blob/', '/')}${fileName}" class="file-action" title="NBViewer로 보기" target="_blank">📊</a>`;
+    } 
+    // PDF 파일 처리
+    else if (fileExt === '.pdf') {
+      actions += `<a href="${site_url}${fileName}" class="file-action" title="렌더링된 페이지 보기" target="_blank">📖</a>`;
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📄</a>`;
+      // PDF.js 뷰어
+      // actions += `<a href="https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(githubRawUrl)}" class="file-action" title="PDF 뷰어로 보기" target="_blank">👁️</a>`;
+      // Google Docs Viewer (백업)
+      // actions += `<a href="https://docs.google.com/viewer?url=${encodeURIComponent(githubRawUrl)}&embedded=true" class="file-action" title="Google 뷰어로 보기" target="_blank">🔍</a>`;
+    } 
+    // Microsoft Office 문서 (Word, PowerPoint)
+    else if (fileExt === '.docx' || fileExt === '.pptx') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+    } 
+
+    // Excel 파일 처리
+    else if (fileExt === '.xlsx' || fileExt === '.xls') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+    }
+
+    // CSV 파일 처리
+    else if (fileExt === '.csv') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+      // CSV 뷰어 (별도 구현)
+      actions += `<a href="javascript:openCSVViewer('${fileName}')" class="file-action" title="CSV 데이터 보기">📊</a>`;
+    }
+    // 이미지 파일 처리
+    else if (['.png', '.jpg', '.jpeg', '.gif', '.svg'].includes(fileExt)) {
+      actions += `<a href="${githubRawUrl}" class="file-action" title="이미지 보기" target="_blank">🖼️</a>`;
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+    }
+    // HWP 파일 처리
+    else if (fileExt === '.hwp') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 다운로드" target="_blank">📥</a>`;
+      actions += `<a href="javascript:alert('HWP 파일은 온라인 뷰어를 지원하지 않습니다. 다운로드하여 확인해주세요.')" class="file-action" title="뷰어 지원 안함">❌</a>`;
+    }
+    // HTML 파일 처리
+    else if (fileExt === '.html') {
+      actions += `<a href="${site_url}${fileName}" class="file-action" title="웹페이지로 보기" target="_blank">🌐</a>`;
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 원본 보기" target="_blank">📖</a>`;
+    }
+    // JSON 파일 처리
+    else if (fileExt === '.json') {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+      actions += `<a href="javascript:openJSONViewer('${fileName}')" class="file-action" title="JSON 뷰어로 보기">⚙️</a>`;
+    }
+    // 기타 텍스트 파일 (.py, .txt, .js, .css 등)
+    else if (['.py', '.js', '.css', '.txt', '.xml', '.yaml', '.yml'].includes(fileExt)) {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 보기" target="_blank">📖</a>`;
+      actions += `<a href="${githubRawUrl}" class="file-action" title="원본 텍스트 보기" target="_blank">📄</a>`;
+    }
+    // 압축 파일
+    else if (['.zip', '.rar', '.7z', '.tar', '.gz'].includes(fileExt)) {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 다운로드" target="_blank">📥</a>`;
+    }
+    // 기타 파일
+    else {
+      actions += `<a href="${git_url}${fileName}" class="file-action" title="GitHub에서 원본 보기" target="_blank">📖</a>`;
+    }
+    return actions;
+  }
+
+  // DOM이 로드된 후 파일 목록 렌더링
+  document.addEventListener('DOMContentLoaded', function() {
+    const fileGrid = document.querySelector('.file-grid');
+    
+    if (curFiles.length === 0) {
+      fileGrid.innerHTML = `
+        <div class="empty-message">
+          <span class="empty-icon">📄</span>
+          <h3>파일이 없습니다</h3>
+          <p>현재 이 위치에는 완료된 미션 파일이 없습니다.</p>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+    curFiles.forEach(file => {
+      if (file.name === 'index.md' || file.name === 'info.md') return;
+
+      const fileInfo = getFileInfo(file.extname);
+      const fileDate = file.modified_time ? new Date(file.modified_time).toLocaleDateString('ko-KR') : '';
+      const actions = getFileActions(file);
+      
+      html += `
+        <div class="file-item">
+          <div class="file-icon">${fileInfo.icon}</div>
+          <div class="file-info">
+            <h4 class="file-name">${file.name}</h4>
+            <p class="file-type">${fileInfo.type}</p>
+            <p class="file-size">${fileDate}</p>
+          </div>
+          <div class="file-actions">
+            ${actions}
+          </div>
+        </div>
+      `;
+    });
+    
+    fileGrid.innerHTML = html;
+  });
+
+/*
+<h2>� 하위 폴더 목록</h2>
+<div class="folder-grid">
+</div>
+*/

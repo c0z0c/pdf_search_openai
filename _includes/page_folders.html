@@ -1,0 +1,129 @@
+
+  // 하위 폴더 목록 파싱 함수
+  function getSubDirectories(files, pages, currentDir) {
+    const subDirs = new Set();
+    
+    // currentDir 정규화 (항상 /로 끝나도록)
+    const normalizedCurrentDir = currentDir === '/' ? '/' : currentDir.endsWith('/') ? currentDir : currentDir + '/';
+    
+    // files에서 하위 폴더 추출
+    files.forEach(file => {
+      const filePath = file.path;
+      
+      // 현재 디렉토리의 직접적인 하위 폴더만 찾기
+      if (normalizedCurrentDir === '/') {
+        // 루트 디렉토리인 경우
+        if (filePath.startsWith('/') && filePath.indexOf('/', 1) > 0) {
+          const firstSlashIndex = filePath.indexOf('/', 1);
+          const subFolderName = filePath.substring(1, firstSlashIndex);
+          const subDirPath = '/' + subFolderName + '/';
+          subDirs.add(subDirPath);
+        }
+      } else {
+        // 하위 디렉토리인 경우
+        if (filePath.startsWith(normalizedCurrentDir)) {
+          const remainingPath = filePath.substring(normalizedCurrentDir.length);
+          const slashIndex = remainingPath.indexOf('/');
+          if (slashIndex > 0) {
+            const subFolderName = remainingPath.substring(0, slashIndex);
+            const subDirPath = normalizedCurrentDir + subFolderName + '/';
+            subDirs.add(subDirPath);
+          }
+        }
+      }
+    });
+
+    // pages에서 하위 폴더 추출 (md 파일 제외하고 모든 페이지 처리)
+    pages.forEach(page => {
+      const pagePath = page.path;
+
+      if (pagePath.startsWith('/md/')) return;
+      if (pagePath.startsWith('/assets/')) return;
+      
+      // 현재 디렉토리의 직접적인 하위 폴더만 찾기
+      if (normalizedCurrentDir === '/') {
+        // 루트 디렉토리인 경우
+        if (pagePath.startsWith('/') && pagePath.indexOf('/', 1) > 0) {
+          const firstSlashIndex = pagePath.indexOf('/', 1);
+          const subFolderName = pagePath.substring(1, firstSlashIndex);
+          const subDirPath = '/' + subFolderName + '/';
+          subDirs.add(subDirPath);
+        }
+      } else {
+        // 하위 디렉토리인 경우
+        if (pagePath.startsWith(normalizedCurrentDir)) {
+          const remainingPath = pagePath.substring(normalizedCurrentDir.length);
+          const slashIndex = remainingPath.indexOf('/');
+          if (slashIndex > 0) {
+            const subFolderName = remainingPath.substring(0, slashIndex);
+            const subDirPath = normalizedCurrentDir + subFolderName + '/';
+            subDirs.add(subDirPath);
+          }
+        }
+      }
+    });
+    
+    const result = Array.from(subDirs).sort();
+    
+    return result;
+  }
+
+  // 폴더 액션 버튼 생성 함수
+  function getFolderActions(folderPath) {
+    const cleanPath = folderPath.replace(/\/$/, ''); // 끝의 / 제거
+    return `
+      <a href="${project_url}${cleanPath}/" class="file-action" title="폴더 열기">📖</a>
+      <a href="${project_git_url}${cleanPath}/" class="file-action" title="GitHub에서 보기" target="_blank">📂</a>
+    `;
+  }
+
+  // DOM이 로드된 후 파일 목록 렌더링
+  document.addEventListener('DOMContentLoaded', function() {
+    // 하위 폴더 목록 생성
+    const allFilesData = allFiles;
+    const allPagesData = allPages;
+    const subDirectories = getSubDirectories(allFilesData, allPagesData, curDir);
+    
+    // 폴더 목록 렌더링
+    const folderGrid = document.querySelector('.folder-grid');
+    if (folderGrid) {
+      if (subDirectories.length === 0) {
+        folderGrid.innerHTML = `
+          <div class="empty-message">
+            <span class="empty-icon">📁</span>
+            <h3>하위 폴더가 없습니다</h3>
+            <p>현재 위치에는 하위 폴더가 없습니다.</p>
+          </div>
+        `;
+      } else {
+        let folderHtml = '';
+        subDirectories.forEach(folderPath => {
+          const folderInfo = getFolderInfo(folderPath);
+          const folderName = folderPath.split("/").filter(s => s).pop() || "root";
+          const actions = getFolderActions(folderPath);
+          
+          folderHtml += `
+            <div class="file-item folder-item">
+              <div class="file-icon">${folderInfo.icon}</div>
+              <div class="file-info">
+                <h4 class="file-name">${folderName}</h4>
+                <p class="file-type">${folderInfo.desc}</p>
+                <p class="file-size">폴더</p>
+              </div>
+              <div class="file-actions">
+                ${actions}
+              </div>
+            </div>
+          `;
+        });
+        
+        folderGrid.innerHTML = folderHtml;
+      }
+    }
+
+  });
+/*
+<div class="folder-grid">
+</div>
+*/
+

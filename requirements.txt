@@ -1,0 +1,26 @@
+# === RAG 및 LLM 관련 ===
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+openai
+tiktoken
+
+# === PDF 및 문서 처리 ===
+PyMuPDF
+pymupdf4llm
+faiss-cpu
+Pillow
+
+# === 데이터 처리 및 유틸리티 ===
+numpy
+pandas
+dataclasses-json
+python-dotenv
+tqdm
+pytz
+
+# === 개발 환경 유틸리티 (선택 사항) ===
+jupyter
+ipykernel
