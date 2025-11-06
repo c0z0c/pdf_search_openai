@@ -23,47 +23,27 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 # helper 모듈 import
-from .utils import helper_utils as hu
-from .utils.helper_utils import *
-from .utils import helper_c0z0c_dev as helper
-from .utils.helper_c0z0c_dev import *
-
 from .config.config import Config
-from .models.data_models import ChunkMetadata, SearchResult
 from .core import (
-    FileHashManager,
     DocumentProcessingPipeline,
+    FileHashManager,
     SummaryPipeline,
     TwoStageSearchPipeline,
     VectorStoreManager,
 )
+from .models.data_models import ChunkMetadata, SearchResult
+from .utils import helper_c0z0c_dev as helper
+from .utils import helper_utils as hu
+from .utils.helper_c0z0c_dev import *
+from .utils.helper_utils import *
+from .utils.logging_config import get_logger, setup_logger
 from .vectorstore import VectorStore
-from .utils.logging_config import setup_logger, get_logger
 
 # 로거 설정
 logger = get_logger(__name__)
 
 # OpenAI API 키 설정
-openai_api_key = None
-if IS_COLAB:
-    from google.colab import userdata
-    openai_api_key = userdata.get('OPENAI_API_KEY')
-else:
-    from dotenv import load_dotenv
-    load_dotenv()
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-
-if openai_api_key:
-    openai_api_key = openai_api_key.strip()
-    os.environ["OPENAI_API_KEY"] = openai_api_key
-    logger.debug(f"OPENAI_API_KEY [{openai_api_key[:4]}****{openai_api_key[-4:]}] 환경변수 설정 완료")
-    logger.info("OPENAI_API_KEY 설정")
-else:
-    logger.warning("openai_api_key가 설정되지 않아 OpenAI 로그인 생략됨")
-
-# Config를 통한 초기화도 시도
-if not openai_api_key:
-    Config.init_openai_key(is_colab=IS_COLAB)
+Config.set_openai_api_key(is_colab=IS_COLAB)
 
 # 하위 호환성을 위한 re-export
 __all__ = [
