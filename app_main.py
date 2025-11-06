@@ -302,7 +302,59 @@ def main():
         
         st.divider()
         
-        st.subheader("2. PDF 업로드 (선택)")
+        st.subheader("2. DB 관리")
+        
+        if st.session_state.db_loaded and st.session_state.vector_store:
+            metadata_df = st.session_state.vector_store.get_metadata_info()
+            
+            if not metadata_df.empty:
+                st.write("현재 DB 파일 목록:")
+                
+                # 파일 선택 (멀티셀렉트)
+                file_list = metadata_df['파일명'].tolist()
+                files_to_delete = st.multiselect(
+                    "삭제할 파일 선택",
+                    options=file_list,
+                    help="여러 파일을 선택할 수 있습니다"
+                )
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    if st.button("선택 파일 삭제", use_container_width=True, disabled=not files_to_delete):
+                        with st.spinner(f"{len(files_to_delete)}개 파일 삭제 중..."):
+                            success_count = 0
+                            for file_name in files_to_delete:
+                                if st.session_state.vector_store.delete_by_file_name(file_name):
+                                    success_count += 1
+                            
+                            if success_count > 0:
+                                st.session_state.vector_store.save(db_name)
+                                st.success(f"{success_count}개 파일 삭제 완료")
+                                st.rerun()
+                            else:
+                                st.error("파일 삭제 실패")
+                
+                with col2:
+                    if st.button("DB 전체 초기화", use_container_width=True, type="secondary"):
+                        if st.warning("정말로 전체 DB를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다."):
+                            with st.spinner("DB 초기화 중..."):
+                                try:
+                                    st.session_state.vector_store.delete(db_name)
+                                    st.session_state.vector_store = None
+                                    st.session_state.db_loaded = False
+                                    st.success("DB 초기화 완료")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"초기화 실패: {str(e)}")
+            else:
+                st.info("DB가 비어있습니다")
+        else:
+            st.info("먼저 벡터스토어를 로드하세요")
+        
+        st.divider()
+        
+        st.subheader("3. PDF 업로드 (선택)")
         uploaded_files = st.file_uploader(
             "PDF 파일 선택",
             type=['pdf'],

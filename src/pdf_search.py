@@ -25,6 +25,7 @@ from typing import List, Dict, Tuple, Optional, Callable, Any
 
 # pandas, numpy 등 기본 라이브러리
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 
 # LangChain 관련
@@ -53,7 +54,6 @@ except ImportError:
         logging.warning(f"helper 모듈 로드 실패: {e}")
         # 기본값 설정
         IS_COLAB = False
-        RUN_PROCESS = {'심플데이타': False}
     
     def drive_root():
         """기본 drive_root 함수"""
@@ -239,9 +239,6 @@ class DocumentProcessingPipeline:
         
         with fitz.open(pdf_path) as doc:
             total_pages = len(doc)
-
-        if RUN_PROCESS['심플데이타']:
-            total_pages = min(total_pages, 10)
 
         pages_data = []
         with tqdm(total=total_pages, desc="PDF to Markdown", unit="page") as pbar:
@@ -1367,6 +1364,102 @@ class VectorStore:
         df = pd.DataFrame(result)
         logger.debug(f"총 {len(df)}개 파일 메타데이터 조회 완료")
         return df
+    
+    def delete_by_file_name(self, file_name: str) -> bool:
+        """
+        특정 파일의 모든 청크를 VectorStore에서 삭제
+        
+        Args:
+            file_name (str): 삭제할 파일명
+            
+        Returns:
+            bool: 삭제 성공 여부
+            
+        Examples:
+            >>> vector_store.delete_by_file_name("sample.pdf")
+            >>> vector_store.save("my_knowledge_base")
+        """
+        if self.original_vectorstore is None or self.summary_vectorstore is None:
+            logger.warning("VectorStore가 비어있습니다.")
+            return False
+        
+        try:
+            # 1. Original vectorstore에서 삭제
+            orig_docstore = self.original_vectorstore.docstore._dict
+            orig_index_to_id = self.original_vectorstore.index_to_docstore_id
+            
+            # 삭제할 인덱스 수집
+            indices_to_delete = []
+            for idx, doc_id in orig_index_to_id.items():
+                doc = orig_docstore.get(doc_id)
+                if doc and doc.metadata.get('file_name') == file_name:
+                    indices_to_delete.append(idx)
+            
+            if not indices_to_delete:
+                logger.warning(f"'{file_name}' 파일을 찾을 수 없습니다.")
+                return False
+            
+            # FAISS에서 인덱스 삭제
+            self.original_vectorstore.index.remove_ids(
+                np.array(indices_to_delete, dtype=np.int64)
+            )
+            
+            # docstore에서 문서 삭제
+            for idx in indices_to_delete:
+                doc_id = orig_index_to_id[idx]
+                if doc_id in orig_docstore:
+                    del orig_docstore[doc_id]
+                del orig_index_to_id[idx]
+            
+            # 인덱스 재정렬
+            new_index_to_id = {new_idx: doc_id 
+                               for new_idx, (_, doc_id) in enumerate(orig_index_to_id.items())}
+            self.original_vectorstore.index_to_docstore_id = new_index_to_id
+            
+            logger.debug(f"Original vectorstore: {len(indices_to_delete)}개 청크 삭제")
+            
+            # 2. Summary vectorstore에서 삭제
+            summ_docstore = self.summary_vectorstore.docstore._dict
+            summ_index_to_id = self.summary_vectorstore.index_to_docstore_id
+            
+            summ_indices_to_delete = []
+            for idx, doc_id in summ_index_to_id.items():
+                doc = summ_docstore.get(doc_id)
+                if doc and doc.metadata.get('file_name') == file_name:
+                    summ_indices_to_delete.append(idx)
+            
+            if summ_indices_to_delete:
+                self.summary_vectorstore.index.remove_ids(
+                    np.array(summ_indices_to_delete, dtype=np.int64)
+                )
+                
+                for idx in summ_indices_to_delete:
+                    doc_id = summ_index_to_id[idx]
+                    if doc_id in summ_docstore:
+                        del summ_docstore[doc_id]
+                    del summ_index_to_id[idx]
+                
+                new_summ_index_to_id = {new_idx: doc_id 
+                                        for new_idx, (_, doc_id) in enumerate(summ_index_to_id.items())}
+                self.summary_vectorstore.index_to_docstore_id = new_summ_index_to_id
+                
+                logger.debug(f"Summary vectorstore: {len(summ_indices_to_delete)}개 청크 삭제")
+            
+            # 3. processed_files에서 제거 (해시 기반 역조회)
+            hashes_to_remove = [
+                hash_key for hash_key, fname in self.doc_pipeline.processed_files.items()
+                if fname == file_name
+            ]
+            for hash_key in hashes_to_remove:
+                del self.doc_pipeline.processed_files[hash_key]
+                logger.debug(f"processed_files에서 해시 제거: {hash_key[:16]}...")
+            
+            logger.info(f"✓ '{file_name}' 삭제 완료 (원본: {len(indices_to_delete)}, 요약: {len(summ_indices_to_delete)})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"파일 삭제 실패: {str(e)}")
+            return False
     
     def print_sample(self, file_name: str, chunk_index: int) -> None:
         """
