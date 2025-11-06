@@ -53,6 +53,12 @@ pragma: no-cache
   - [9.1. 문서 특성 분석](#91-문서-특성-분석)<br/>
   - [9.2. 효과적인 질문 예시](#92-효과적인-질문-예시)<br/>
   - [9.3. 주의사항](#93-주의사항)<br/>
+- [10. 프로젝트 리팩토링 아키텍처](#10-프로젝트-리팩토링-아키텍처)<br/>
+  - [10.1. 클린 아키텍처 도입](#101-클린-아키텍처-도입)<br/>
+  - [10.2. 모듈별 상세 설명](#102-모듈별-상세-설명)<br/>
+  - [10.3. Progress Callback 시스템](#103-progress-callback-시스템)<br/>
+  - [10.4. 리팩토링 이점](#104-리팩토링-이점)<br/>
+  - [10.5. 마이그레이션 가이드](#105-마이그레이션-가이드)<br/>
 - [부록 A. 심화 RAG 기법](#부록-a-심화-rag-기법)<br/>
 - [부록 B. 대안 LLM API 실험](#부록-b-대안-llm-api-실험)<br/>
 - [부록 C. 체크리스트](#부록-c-체크리스트)<br/>
@@ -2130,6 +2136,515 @@ disclaimer = """
 **3. 개인정보 보호**
 - 사용자의 소득, 지출 정보 저장 금지
 - 질문 로그에 개인정보 포함 시 즉시 삭제
+
+---
+
+---
+
+## 10. 프로젝트 리팩토링 아키텍처
+
+### 10.1. 클린 아키텍처 도입
+
+프로젝트는 클린 아키텍처(Clean Architecture) 원칙에 따라 재구성되었습니다.
+
+**핵심 원칙:**
+1. **관심사 분리(Separation of Concerns)**: 각 모듈이 하나의 책임만 수행
+2. **의존성 역전(Dependency Inversion)**: 고수준 정책이 저수준 세부사항에 의존하지 않음
+3. **단일 책임 원칙(Single Responsibility)**: 각 클래스는 하나의 변경 이유만 가짐
+
+**계층 구조:**
+
+```mermaid
+graph TB
+    A["app_main.py<br/>(Streamlit UI)"] --> B["VectorStore<br/>(Facade Interface)"]
+    B --> C1["DocumentProcessingPipeline"]
+    B --> C2["SummaryPipeline"]
+    B --> C3["TwoStageSearchPipeline"]
+    B --> C4["VectorStoreManager"]
+    
+    C1 --> D1["FileHashManager"]
+    C1 --> D2["Config"]
+    C2 --> D2
+    C3 --> D2
+    C4 --> D2
+    
+    C1 --> E["ChunkMetadata"]
+    C3 --> F["SearchResult"]
+    
+    D2 --> G["logging_config"]
+    
+    style A fill:#e1f5ff
+    style B fill:#ffe1e1
+    style D2 fill:#fff4e1
+```
+
+### 10.2. 모듈별 상세 설명
+
+#### 10.2.1. config/ - 중앙 설정 관리
+
+**config.py**
+
+모든 설정값을 한 곳에서 관리합니다.
+
+```python
+class Config:
+    """전역 설정 클래스"""
+    
+    # 청킹 설정
+    CHUNK_SIZE = 600
+    CHUNK_OVERLAP = 100
+    CHUNK_SEPARATORS = ["\n\n", "\n", ".", "!", "?", " ", ""]
+    
+    # 요약 설정
+    SUMMARY_RATIO = 0.2  # 20% 크기로 요약
+    SUMMARY_MIN_LENGTH = 100
+    SUMMARY_OVERLAP_RATIO = 0.1
+    
+    # 검색 설정
+    SIMILARITY_THRESHOLD = 0.75
+    TOP_K_SUMMARY = 5
+    TOP_K_FINAL = 2
+    SCORE_GAP_THRESHOLD = 0.15
+    
+    # 해시 설정
+    HASH_ALGORITHM = "sha256"
+    
+    # 임베딩 설정
+    EMBEDDING_BATCH_SIZE = 100
+    
+    # 경로 설정
+    DEFAULT_DB_PATH = "./data/vectorstore_db"
+```
+
+**장점:**
+- 설정 변경 시 한 곳만 수정
+- 실험 파라미터 추적 용이
+- 타입 힌트로 안전성 보장
+
+#### 10.2.2. models/ - 데이터 구조 정의
+
+**data_models.py**
+
+타입 안전성을 보장하는 데이터 클래스를 정의합니다.
+
+```python
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class ChunkMetadata:
+    """청크 메타데이터"""
+    file_name: str
+    page: int
+    chunk_type: str  # "original" or "summary"
+    file_hash: str
+    chunk_index: Optional[int] = None
+
+@dataclass
+class SearchResult:
+    """검색 결과"""
+    content: str
+    metadata: ChunkMetadata
+    score: float
+    rank: int
+```
+
+**장점:**
+- IDE 자동완성 지원
+- 타입 검증 (mypy)
+- 명확한 데이터 구조
+
+#### 10.2.3. core/ - 비즈니스 로직 파이프라인
+
+각 파이프라인은 독립적으로 테스트 가능하며, 단일 책임을 가집니다.
+
+**DocumentProcessingPipeline**
+
+```python
+class DocumentProcessingPipeline:
+    """PDF → Markdown → 청킹"""
+    
+    def __init__(self, chunk_size, chunk_overlap, progress_callback=None):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.progress_callback = progress_callback
+        self.text_splitter = RecursiveCharacterTextSplitter(...)
+        self.hash_manager = FileHashManager()
+        
+    def process_pdf(self, pdf_path: str) -> List[Document]:
+        """PDF 처리 메인 로직"""
+        # 1. 중복 체크
+        if self.is_file_already_processed(pdf_path):
+            return []
+        
+        # 2. Markdown 변환 (콜백 지원)
+        pages_data = self._convert_pdf_to_markdown(pdf_path)
+        
+        # 3. 청킹
+        chunks = self._create_chunks(pages_data)
+        
+        return chunks
+```
+
+**SummaryPipeline**
+
+```python
+class SummaryPipeline:
+    """청크 요약 생성 (20% 크기)"""
+    
+    def __init__(self, llm, summary_ratio=0.2, progress_callback=None):
+        self.llm = llm
+        self.summary_ratio = summary_ratio
+        self.progress_callback = progress_callback
+        
+    def create_summary_chunks(self, original_chunks: List[Document]) -> List[Document]:
+        """원본 청크들의 요약본 생성"""
+        summary_chunks = []
+        
+        for i, chunk in enumerate(tqdm(original_chunks, desc="요약 생성")):
+            summary = self.summarize_chunk(chunk)
+            
+            # 콜백 호출
+            if self.progress_callback:
+                self.progress_callback({
+                    'current_chunk': i + 1,
+                    'total_chunks': len(original_chunks),
+                    'compression_ratio': len(summary) / len(chunk.page_content),
+                    'status': 'completed'
+                })
+            
+            summary_chunks.append(Document(
+                page_content=summary,
+                metadata={**chunk.metadata, 'chunk_type': 'summary'}
+            ))
+        
+        return summary_chunks
+```
+
+**TwoStageSearchPipeline**
+
+```python
+class TwoStageSearchPipeline:
+    """2단계 검색: 요약문 → 원본"""
+    
+    def __init__(self, summary_vs, original_vs, similarity_threshold=0.75):
+        self.summary_vs = summary_vs
+        self.original_vs = original_vs
+        self.similarity_threshold = similarity_threshold
+        
+    def search(self, query: str, top_k: int = 2) -> List[SearchResult]:
+        """2단계 검색 실행"""
+        # 1단계: 요약문 검색
+        summary_results = self.summary_vs.similarity_search_with_score(
+            query, k=Config.TOP_K_SUMMARY
+        )
+        
+        # 필터링
+        filtered = [r for r in summary_results if r[1] >= self.similarity_threshold]
+        
+        if not filtered:
+            return []
+        
+        # 2단계: 원본 문서 검색
+        candidate_hashes = self._extract_file_hashes(filtered)
+        final_results = self._search_original_documents(query, candidate_hashes, top_k)
+        
+        return final_results
+```
+
+**VectorStoreManager**
+
+```python
+class VectorStoreManager:
+    """벡터스토어 저장/로드/삭제 관리"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = Path(db_path)
+        
+    def save(self, name: str, summary_vs: FAISS, original_vs: FAISS, processed_files: Dict):
+        """VectorStore 저장"""
+        summary_path = self.db_path / f"{name}_summary"
+        original_path = self.db_path / f"{name}_original"
+        
+        summary_vs.save_local(str(summary_path))
+        original_vs.save_local(str(original_path))
+        
+        # 메타데이터 저장
+        metadata = {
+            'processed_files': processed_files,
+            'saved_at': datetime.now().isoformat()
+        }
+        self._save_metadata(name, metadata)
+        
+    def load(self, name: str, embeddings) -> Tuple[FAISS, FAISS, Dict]:
+        """VectorStore 로드"""
+        # ...
+        
+    def delete(self, name: str):
+        """VectorStore 삭제"""
+        # ...
+```
+
+#### 10.2.4. utils/ - 유틸리티 함수
+
+**logging_config.py**
+
+구조화된 로깅을 제공합니다.
+
+```python
+import logging
+from pathlib import Path
+
+def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    """로거 설정"""
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    
+    # 포맷터
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 콘솔 핸들러
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+def get_logger(name: str) -> logging.Logger:
+    """로거 가져오기"""
+    return logging.getLogger(name)
+```
+
+**사용 예시:**
+```python
+from src.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+logger.info("문서 처리 시작")
+logger.debug(f"청크 크기: {chunk_size}")
+logger.warning("빈 페이지 발견")
+logger.error(f"오류 발생: {error_msg}")
+```
+
+#### 10.2.5. vectorstore.py - Facade Pattern
+
+모든 파이프라인을 통합하는 단일 인터페이스를 제공합니다.
+
+```python
+class VectorStore:
+    """통합 RAG 시스템 인터페이스 (Facade)"""
+    
+    def __init__(self, llm, chunk_size=600, chunk_overlap=100, 
+                 db_path="./data/vectorstore_db",
+                 pdf_progress_callback=None,
+                 summary_progress_callback=None):
+        # 파이프라인 초기화
+        self.doc_pipeline = DocumentProcessingPipeline(
+            chunk_size, chunk_overlap, progress_callback=pdf_progress_callback
+        )
+        self.summary_pipeline = SummaryPipeline(
+            llm, progress_callback=summary_progress_callback
+        )
+        self.db_manager = VectorStoreManager(db_path)
+        
+        # VectorStore
+        self.summary_vectorstore = None
+        self.original_vectorstore = None
+        self.search_pipeline = None
+        
+    def add_documents(self, pdf_paths: List[str]):
+        """문서 추가 (전체 파이프라인 실행)"""
+        # 1. 문서 처리
+        all_original_chunks = []
+        for pdf_path in pdf_paths:
+            chunks = self.doc_pipeline.process_pdf(pdf_path)
+            all_original_chunks.extend(chunks)
+        
+        # 2. 요약 생성
+        all_summary_chunks = self.summary_pipeline.create_summary_chunks(
+            all_original_chunks
+        )
+        
+        # 3. VectorStore 생성
+        self._create_vectorstores(all_original_chunks, all_summary_chunks)
+        
+    def search(self, query: str) -> List[SearchResult]:
+        """2단계 검색"""
+        return self.search_pipeline.search(query)
+        
+    def save(self, name: str):
+        """저장"""
+        self.db_manager.save(
+            name, 
+            self.summary_vectorstore, 
+            self.original_vectorstore,
+            self.doc_pipeline.processed_files
+        )
+```
+
+**Facade Pattern의 장점:**
+- 복잡한 파이프라인을 단순한 인터페이스로 추상화
+- 사용자는 내부 구현을 몰라도 사용 가능
+- 파이프라인 변경 시 VectorStore 인터페이스는 유지
+
+### 10.3. Progress Callback 시스템
+
+실시간 진행 상황 모니터링을 위한 콜백 시스템입니다.
+
+**PDF 변환 콜백:**
+
+```python
+def pdf_progress_callback(info: Dict[str, Any]):
+    """
+    info 구조:
+    {
+        'file_name': str,           # 파일명
+        'current_page': int,        # 현재 페이지
+        'total_pages': int,         # 전체 페이지
+        'page_content_length': int, # 페이지 내용 길이
+        'status': str,              # 'processing', 'empty', 'failed'
+        'error': str                # 오류 메시지 (optional)
+    }
+    """
+    if info['status'] == 'processing':
+        progress = info['current_page'] / info['total_pages'] * 100
+        print(f"PDF 변환: {info['file_name']} [{progress:.1f}%]")
+    elif info['status'] == 'empty':
+        print(f"  빈 페이지 스킵: {info['current_page']}")
+```
+
+**요약 생성 콜백:**
+
+```python
+def summary_progress_callback(info: Dict[str, Any]):
+    """
+    info 구조:
+    {
+        'current_chunk': int,       # 현재 청크 번호
+        'total_chunks': int,        # 전체 청크 수
+        'file_name': str,           # 파일명
+        'page': int,                # 페이지 번호
+        'original_length': int,     # 원본 길이
+        'summary_length': int,      # 요약 길이
+        'compression_ratio': float, # 압축률
+        'status': str,              # 'processing', 'completed', 'failed'
+        'error': str                # 오류 메시지 (optional)
+    }
+    """
+    if info['status'] == 'completed':
+        progress = info['current_chunk'] / info['total_chunks'] * 100
+        ratio = info['compression_ratio']
+        print(f"요약 생성: [{progress:.1f}%] 압축률 {ratio:.1%}")
+```
+
+**Streamlit 통합 예시:**
+
+```python
+import streamlit as st
+
+def create_streamlit_callbacks():
+    """Streamlit용 콜백 생성"""
+    
+    # Progress bar 생성
+    pdf_progress = st.progress(0)
+    pdf_status = st.empty()
+    
+    summary_progress = st.progress(0)
+    summary_status = st.empty()
+    
+    def pdf_callback(info):
+        progress = info['current_page'] / info['total_pages']
+        pdf_progress.progress(progress)
+        pdf_status.text(f"PDF 변환: {info['file_name']} "
+                        f"({info['current_page']}/{info['total_pages']})")
+    
+    def summary_callback(info):
+        progress = info['current_chunk'] / info['total_chunks']
+        summary_progress.progress(progress)
+        if info['status'] == 'completed':
+            summary_status.text(f"요약 생성: {info['current_chunk']}/{info['total_chunks']} "
+                                f"(압축률 {info['compression_ratio']:.1%})")
+    
+    return pdf_callback, summary_callback
+
+# 사용
+pdf_cb, summary_cb = create_streamlit_callbacks()
+vector_store = VectorStore(
+    llm=llm,
+    pdf_progress_callback=pdf_cb,
+    summary_progress_callback=summary_cb
+)
+```
+
+### 10.4. 리팩토링 이점
+
+**1. 유지보수성 향상**
+- 각 모듈이 독립적이어서 수정 영향 범위 최소화
+- 버그 발생 시 해당 파이프라인만 수정
+
+**2. 테스트 용이성**
+- 각 파이프라인을 독립적으로 단위 테스트 가능
+```python
+def test_document_processing():
+    pipeline = DocumentProcessingPipeline(chunk_size=600, chunk_overlap=100)
+    chunks = pipeline.process_pdf("test.pdf")
+    assert len(chunks) > 0
+    assert all(len(c.page_content) <= 600 for c in chunks)
+```
+
+**3. 확장성**
+- 새로운 파이프라인 추가 시 기존 코드 수정 불필요
+- 예: `TranslationPipeline`, `FilteringPipeline` 추가
+
+**4. 재사용성**
+- 각 파이프라인을 다른 프로젝트에서도 사용 가능
+```python
+# 다른 프로젝트에서
+from src.core.summary_pipeline import SummaryPipeline
+
+summary_pipeline = SummaryPipeline(llm, summary_ratio=0.3)
+summaries = summary_pipeline.create_summary_chunks(my_chunks)
+```
+
+**5. 가독성**
+- 코드 구조가 직관적
+- 새로운 개발자도 쉽게 이해
+
+### 10.5. 마이그레이션 가이드
+
+기존 코드에서 리팩토링된 구조로 마이그레이션하는 방법입니다.
+
+**Before (단일 파일):**
+```python
+from src.pdf_search import VectorStore
+
+vector_store = VectorStore(llm=llm)
+```
+
+**After (모듈화):**
+```python
+# 권장 방식
+from src.vectorstore import VectorStore
+
+vector_store = VectorStore(llm=llm)
+```
+
+**레거시 호환성:**
+- `src.pdf_search`는 여전히 작동 (하위 호환성 유지)
+- 내부적으로 `src.vectorstore`를 re-export
+- 경고 메시지 없이 점진적 마이그레이션 가능
+
+**개별 파이프라인 사용:**
+```python
+# 요약 파이프라인만 필요한 경우
+from src.core.summary_pipeline import SummaryPipeline
+
+summary_pipeline = SummaryPipeline(llm)
+summaries = summary_pipeline.create_summary_chunks(chunks)
+```
 
 ---
 

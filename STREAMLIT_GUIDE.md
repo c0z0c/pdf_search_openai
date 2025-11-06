@@ -285,7 +285,7 @@ pdf_search_openai/
 Streamlit 앱의 백엔드를 직접 사용:
 
 ```python
-from src.pdf_search import VectorStore
+from src.vectorstore import VectorStore  # 메인 인터페이스
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -300,7 +300,7 @@ vector_store = VectorStore(
 # 기존 DB 로드
 vector_store.load("my_knowledge_base")
 
-# 검색
+# 검색 (2단계: 요약문 → 원본)
 results = vector_store.search("원천징수란?")
 
 # 답변 생성
@@ -308,17 +308,62 @@ context = vector_store.get_rag_context("원천징수란?")
 answer = vector_store.generate_answer("원천징수란?", context=context)
 ```
 
+**레거시 호환성**
+
+기존 코드와의 호환성을 위해 `src.pdf_search` import도 지원됩니다:
+
+```python
+# 이전 방식 (여전히 작동)
+from src.pdf_search import VectorStore
+
+# 권장 방식
+from src.vectorstore import VectorStore
+```
+
 ### 8.2 Progress Callback 커스터마이징
+
+Progress Callback을 통해 PDF 변환 및 요약 생성 진행 상황을 실시간으로 모니터링할 수 있습니다.
 
 ```python
 def custom_pdf_callback(info):
-    print(f"[PDF] {info['file_name']} - {info['current_page']}/{info['total_pages']}")
-    if info['status'] == 'failed':
-        print(f"  오류: {info['error']}")
+    """
+    PDF 변환 진행 상황 콜백
+    
+    info 딕셔너리 구조:
+    - file_name: 파일명
+    - current_page: 현재 페이지 번호
+    - total_pages: 전체 페이지 수
+    - page_content_length: 페이지 내용 길이
+    - status: 'processing', 'empty', 'failed'
+    - error: 오류 메시지 (status='failed'일 때)
+    """
+    if info['status'] == 'processing':
+        print(f"[PDF] {info['file_name']} - {info['current_page']}/{info['total_pages']}")
+    elif info['status'] == 'empty':
+        print(f"  빈 페이지: {info['current_page']}")
+    elif info['status'] == 'failed':
+        print(f"  오류 발생: {info['error']}")
 
 def custom_summary_callback(info):
-    if info['status'] == 'completed':
-        print(f"[요약] 압축률: {info['compression_ratio']:.1%}")
+    """
+    요약 진행 상황 콜백
+    
+    info 딕셔너리 구조:
+    - current_chunk: 현재 청크 번호
+    - total_chunks: 전체 청크 수
+    - file_name: 파일명
+    - page: 페이지 번호
+    - original_length: 원본 길이
+    - summary_length: 요약 길이
+    - compression_ratio: 압축률
+    - status: 'processing', 'completed', 'failed'
+    - error: 오류 메시지 (optional)
+    """
+    if info['status'] == 'processing':
+        print(f"[요약] 처리 중: {info['current_chunk']}/{info['total_chunks']}")
+    elif info['status'] == 'completed':
+        print(f"[요약] 완료: 압축률 {info['compression_ratio']:.1%} "
+              f"({info['original_length']}자 → {info['summary_length']}자)")
 
 vector_store = VectorStore(
     llm=llm,

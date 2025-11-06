@@ -87,18 +87,23 @@ streamlit run app_main.py
 
 ```python
 from langchain_openai import ChatOpenAI
-from src.pdf_search import VectorStore
+from src.vectorstore import VectorStore
 
 # LLM 초기화
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 # VectorStore 생성 (progress callback 옵션)
 def pdf_callback(info):
+    """PDF 변환 진행 상황 콜백"""
     print(f"PDF 변환: {info['file_name']} ({info['current_page']}/{info['total_pages']})")
+    if info['status'] == 'empty':
+        print(f"  빈 페이지: {info['current_page']}")
 
 def summary_callback(info):
+    """요약 진행 상황 콜백"""
     if info['status'] == 'completed':
-        print(f"요약 완료: 압축률 {info['compression_ratio']:.1%}")
+        print(f"요약 완료: {info['current_chunk']}/{info['total_chunks']} - "
+              f"압축률 {info['compression_ratio']:.1%}")
 
 vector_store = VectorStore(
     llm=llm,
@@ -109,15 +114,18 @@ vector_store = VectorStore(
     summary_progress_callback=summary_callback
 )
 
-# 문서 추가
+# 문서 추가 (해시 기반 중복 제거 자동)
 pdf_files = ["path/to/document.pdf"]
 vector_store.add_documents(pdf_files)
 
 # 저장
 vector_store.save("my_knowledge_base")
 
-# 검색
+# 검색 (2단계: 요약문 → 원본)
 query = "RAG의 핵심 원리는 무엇인가요?"
+results = vector_store.search(query)
+
+# RAG 컨텍스트 생성
 context = vector_store.get_rag_context(query)
 
 # 답변 생성
@@ -131,18 +139,27 @@ print(answer)
 # 기존 벡터스토어 로드
 vector_store.load("my_knowledge_base")
 
-# 메타데이터 조회
-metadata_info = vector_store.get_metadata_info()
-print(metadata_info)
+# 메타데이터 조회 (DataFrame 반환)
+metadata_df = vector_store.get_metadata_info()
+print(metadata_df)
+# 출력 예시:
+#    file_name  pages  chunks  chunk_type  file_hash
+# 0  sample.pdf  10     52     original    abc123...
+# 1  sample.pdf  10     52     summary     abc123...
 
-# 특정 파일 삭제
-vector_store.delete_by_file_name("sample.pdf")
-vector_store.save("my_knowledge_base")
+# 특정 파일의 모든 청크 삭제
+success = vector_store.delete_by_file_name("sample.pdf")
+if success:
+    vector_store.save("my_knowledge_base")
 
-# 특정 청크 조회
+# 특정 청크 상세 조회
 chunk_info = vector_store.get_sample("sample.pdf", chunk_index=5)
 print(f"원본: {chunk_info['original_length']}자")
 print(f"요약: {chunk_info['summary_length']}자")
+print(f"압축률: {chunk_info['compression_ratio']:.1%}")
+
+# 시각화 출력
+vector_store.print_sample("sample.pdf", 5)
 ```
 
 ## 프로젝트 구조
@@ -157,13 +174,28 @@ pdf_search_openai/
 ├── .gitignore                    # Git 제외 파일 목록
 ├── src/
 │   ├── __init__.py
-│   ├── pdf_search.py            # RAG 시스템 코어
-│   ├── helper_utils.py          # 유틸리티 함수
-│   └── helper_c0z0c_dev.py      # 개발 헬퍼 함수
+│   ├── pdf_search.py            # RAG 시스템 (레거시 호환)
+│   ├── vectorstore.py           # VectorStore 메인 인터페이스
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── config.py            # 전역 설정
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── document_processor.py    # PDF 처리 파이프라인
+│   │   ├── file_hash_manager.py     # 파일 해시 관리
+│   │   ├── search_pipeline.py       # 2단계 검색 파이프라인
+│   │   ├── summary_pipeline.py      # 요약 생성 파이프라인
+│   │   └── vectorstore_manager.py   # DB 저장/로드 관리
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── data_models.py       # 데이터 모델 (ChunkMetadata, SearchResult)
+│   └── utils/
+│       ├── __init__.py
+│       ├── helper_utils.py      # 유틸리티 함수
+│       ├── helper_c0z0c_dev.py  # 개발 헬퍼 함수
+│       └── logging_config.py    # 로깅 설정
 ├── docs/                         # 문서
-│   ├── pd_search.md
-│   ├── deployment_fix.md
-│   └── path_improvements.md
+│   └── pd_search.md
 ├── data/                         # 데이터 파일
 │   ├── temp/                    # 임시 파일 (업로드된 PDF)
 │   └── vectorstore_db/          # VectorStore DB
@@ -177,14 +209,32 @@ pdf_search_openai/
 
 ## 아키텍처
 
-### 클래스 구조
+### 클린 아키텍처 기반 설계
 
-1. **FileHashManager**: 파일 해시 계산 및 중복 검증
-2. **DocumentProcessingPipeline**: PDF → Markdown → 청킹 (progress callback 지원)
-3. **SummaryPipeline**: 청크 요약 (20% 크기, progress callback 지원)
-4. **TwoStageSearchPipeline**: 2단계 검색 (요약문 → 원본)
-5. **VectorStoreManager**: DB 저장/로드/관리
-6. **VectorStore**: 통합 인터페이스
+프로젝트는 관심사 분리(Separation of Concerns) 원칙에 따라 계층별로 구성됩니다:
+
+**config/** - 전역 설정 및 환경 변수
+- `Config`: 청크 크기, 요약 비율, API 키 등 중앙 관리
+
+**models/** - 데이터 모델 정의
+- `ChunkMetadata`: 청크 메타데이터 구조
+- `SearchResult`: 검색 결과 구조
+
+**core/** - 비즈니스 로직 (파이프라인)
+- `FileHashManager`: 파일 해시 계산 및 중복 검증
+- `DocumentProcessingPipeline`: PDF → Markdown → 청킹 (progress callback 지원)
+- `SummaryPipeline`: 청크 요약 (20% 크기, progress callback 지원)
+- `TwoStageSearchPipeline`: 2단계 검색 (요약문 → 원본)
+- `VectorStoreManager`: DB 저장/로드/관리
+
+**utils/** - 유틸리티 함수
+- `logging_config`: 구조화된 로깅
+- `helper_utils`: 범용 헬퍼 함수
+- `helper_c0z0c_dev`: 개발 환경 헬퍼
+
+**인터페이스 레이어**
+- `VectorStore`: 통합 인터페이스 (Facade Pattern)
+- `pdf_search.py`: 레거시 호환성 유지
 
 ### 처리 흐름
 
