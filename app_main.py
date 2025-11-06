@@ -31,15 +31,11 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Callable, Dict, Any
 from langchain_openai import ChatOpenAI
-import extra_streamlit_components as stx
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from src.pdf_search import VectorStore
-
-# CookieManager 초기화
-cookie_manager = stx.CookieManager()
 
 
 st.markdown("""
@@ -82,21 +78,21 @@ def load_api_key_from_env() -> Optional[str]:
     return os.getenv('OPENAI_API_KEY')
 
 
-def save_api_key_to_cookie(api_key: str) -> None:
-    """API 키를 쿠키에 저장합니다."""
-    cookie_manager.set('openai_api_key', api_key, expires_at=None)
+def save_api_key_to_session(api_key: str) -> None:
+    """API 키를 세션에 저장합니다."""
+    st.session_state.openai_api_key = api_key
 
 
-def load_api_key_from_cookie() -> Optional[str]:
-    """쿠키에서 API 키를 로드합니다."""
-    return cookie_manager.get('openai_api_key')
+def load_api_key_from_session() -> Optional[str]:
+    """세션에서 API 키를 로드합니다."""
+    return st.session_state.get('openai_api_key')
 
 
 def get_api_key() -> Optional[str]:
-    """우선순위: 쿠키 > 환경변수"""
-    cookie_key = load_api_key_from_cookie()
-    if cookie_key:
-        return cookie_key
+    """우선순위: 세션 > 환경변수"""
+    session_key = load_api_key_from_session()
+    if session_key:
+        return session_key
     return load_api_key_from_env()
 
 
@@ -111,7 +107,7 @@ def display_api_key_input() -> Optional[str]:
     3. 생성된 키 복사 (sk-로 시작)
     4. 아래에 붙여넣기
     
-    키는 암호화되어 브라우저 쿠키에 저장됩니다.
+    키는 현재 세션에만 저장됩니다.
     """)
     
     with st.form("api_key_form"):
@@ -135,9 +131,8 @@ def display_api_key_input() -> Optional[str]:
                 st.error("API 키가 너무 짧습니다")
                 return None
             
-            save_api_key_to_cookie(api_key_input)
+            save_api_key_to_session(api_key_input)
             st.success("API 키 저장 완료")
-            st.info("페이지를 새로고침합니다")
             st.rerun()
     
     return None
@@ -257,7 +252,8 @@ def main():
         if api_key:
             st.success("API 키 로드됨")
             if st.button("API 키 변경", use_container_width=True):
-                cookie_manager.delete('openai_api_key')
+                if 'openai_api_key' in st.session_state:
+                    del st.session_state.openai_api_key
                 st.rerun()
         else:
             display_api_key_input()

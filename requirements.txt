@@ -23,4 +23,3 @@ pytz==2024.2
 
 # Streamlit 웹 애플리케이션
 streamlit==1.40.1
-extra-streamlit-components==0.1.71
