@@ -121,9 +121,7 @@ def display_api_key_input() -> Optional[str]:
             help="API 키는 sk-로 시작합니다"
         )
         
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            submit = st.form_submit_button("저장 및 시작", use_container_width=True)
+        submit = st.form_submit_button("저장 및 시작", use_container_width =True)
         
         if submit and api_key_input:
             if not api_key_input.startswith('sk-'):
