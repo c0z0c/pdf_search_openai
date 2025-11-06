@@ -4,22 +4,22 @@ langchain-core==0.2.38
 langchain-community==0.2.16
 langchain-openai==0.1.20
 langchain-text-splitters==0.2.4
-openai==1.35.0
-tiktoken==0.7.0
+openai>=1.0.0
+tiktoken>=0.5.0
 
 # PDF 및 문서 처리
-PyMuPDF==1.24.13
-pymupdf4llm==0.0.17
-faiss-cpu==1.9.0
-Pillow==11.0.0
+PyMuPDF>=1.23.0
+pymupdf4llm>=0.0.10
+faiss-cpu>=1.7.0
+Pillow>=10.0.0
 
 # 데이터 처리
 numpy<2.0.0
-pandas==2.2.3
-dataclasses-json==0.6.7
-python-dotenv==1.0.1
-tqdm==4.67.1
-pytz==2024.2
+pandas>=2.0.0
+dataclasses-json>=0.5.0
+python-dotenv>=0.19.0
+tqdm>=4.60.0
+pytz>=2021.1
 
 # Streamlit 웹 애플리케이션
 streamlit==1.40.1
