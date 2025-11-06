@@ -239,6 +239,34 @@ def display_search_results(results: List[dict]) -> None:
             </div>
             """, unsafe_allow_html=True)
 
+def force_reload_modules() -> bool:
+    """모듈 캐시 및 세션 강제 초기화"""
+    try:
+        # 모듈 캐시 삭제
+        if 'src.pdf_search' in sys.modules:
+            del sys.modules['src.pdf_search']
+        
+        # 세션 상태 초기화
+        if 'vector_store' in st.session_state:
+            del st.session_state['vector_store']
+        
+        st.session_state.db_loaded = False
+        
+        logging.info("모듈 및 세션 초기화 완료")
+        return True
+    except Exception as e:
+        logging.error(f"초기화 실패: {e}")
+        return False
+
+def verify_vector_store_methods(vector_store: VectorStore) -> bool:
+    """VectorStore 필수 메서드 존재 확인"""
+    required_methods = ['delete_by_file_name', 'search', 'add_documents', 'save', 'load']
+    missing_methods = [m for m in required_methods if not hasattr(vector_store, m)]
+    
+    if missing_methods:
+        logging.error(f"누락된 메서드: {missing_methods}")
+        return False
+    return True
 
 def main():
     """메인 애플리케이션"""
@@ -305,6 +333,11 @@ def main():
         st.subheader("2. DB 관리")
         
         if st.session_state.db_loaded and st.session_state.vector_store:
+            # VectorStore 메서드 검증
+            if not verify_vector_store_methods(st.session_state.vector_store):
+                st.error("⚠️ VectorStore 메서드가 누락되었습니다. '모듈 강제 리로드' 버튼을 눌러주세요.")
+                st.stop()
+            
             metadata_df = st.session_state.vector_store.get_metadata_info()
             
             if not metadata_df.empty:
@@ -322,6 +355,11 @@ def main():
                 
                 with col1:
                     if st.button("선택 파일 삭제", use_container_width=True, disabled=not files_to_delete):
+                        # 메서드 존재 확인 후 실행
+                        if not hasattr(st.session_state.vector_store, 'delete_by_file_name'):
+                            st.error("delete_by_file_name 메서드가 없습니다. '모듈 강제 리로드' 버튼을 눌러주세요.")
+                            st.stop()
+                        
                         with st.spinner(f"{len(files_to_delete)}개 파일 삭제 중..."):
                             success_count = 0
                             for file_name in files_to_delete:
@@ -416,6 +454,16 @@ def main():
         st.caption("**청크 크기**: 600자")
         st.caption("**오버랩**: 100자")
         st.caption("**요약 비율**: 20%")
+        
+        # 모듈 강제 리로드 버튼 추가
+        st.divider()
+        if st.button("🔄 모듈 강제 리로드", use_container_width=True, help="VectorStore 클래스를 다시 로드합니다"):
+            with st.spinner("모듈 리로드 중..."):
+                if force_reload_modules():
+                    st.success("리로드 완료! 벡터스토어를 다시 로드하세요.")
+                    st.rerun()
+                else:
+                    st.error("리로드 실패")
     
     if not st.session_state.db_loaded:
         st.info("사이드바에서 벡터스토어를 로드하거나 PDF를 업로드하세요")
