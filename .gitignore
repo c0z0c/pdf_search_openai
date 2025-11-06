@@ -39,9 +39,12 @@ ENV/
 .env.local
 .env.*.local
 
-# Helper Files (downloaded)
-helper_utils.py
-helper_c0z0c_dev.py
+# Streamlit Secrets
+.streamlit/secrets.toml
+
+# Helper Files (downloaded) - 루트 디렉토리만 제외, src/ 내부는 포함
+/helper_utils.py
+/helper_c0z0c_dev.py
 
 # Data
 data/vectorstore/
@@ -49,6 +52,9 @@ data/*.pdf
 data/*.md
 *.faiss
 *.pkl
+
+# 샘플 벡터스토어는 GitHub에 포함 (Streamlit Cloud 테스트용)
+!data/vectorstore_db/
 
 # Logs
 *.log

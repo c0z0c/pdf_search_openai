@@ -5,35 +5,78 @@ Description: 2단계 검색을 활용한 고급 RAG 시스템
 """
 
 import os
-import pickle
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+# OpenMP 중복 로드 경고 무시 (FAISS 사용 시 필요)
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+import sys
 from pathlib import Path
-import importlib
-from urllib.request import urlretrieve
 
-import helper_utils as hu
-from helper_utils import *
+# 스크립트 실행 시 현재 디렉토리를 sys.path에 추가
+SCRIPT_DIR = Path(__file__).parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-import helper_c0z0c_dev as helper
-from helper_c0z0c_dev import *
+# helper 모듈 import 전에 기본 라이브러리 import
+import pickle
+import hashlib
+import logging
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional, Callable, Any
 
+# pandas, numpy 등 기본 라이브러리
+import pandas as pd
+from tqdm import tqdm
+
+# LangChain 관련
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 import pymupdf4llm
-import pandas as pd
-from tqdm import tqdm
-import pytz
+import fitz
+import re
 
-import logging
+# helper 모듈 import (try-except로 안전하게)
+try:
+    from . import helper_utils as hu
+    from .helper_utils import *
+    from . import helper_c0z0c_dev as helper
+    from .helper_c0z0c_dev import *
+except ImportError:
+    try:
+        import helper_utils as hu
+        from helper_utils import *
+        import helper_c0z0c_dev as helper
+        from helper_c0z0c_dev import *
+    except ImportError as e:
+        logging.warning(f"helper 모듈 로드 실패: {e}")
+        # 기본값 설정
+        IS_COLAB = False
+        RUN_PROCESS = {'심플데이타': False}
+    
+    def drive_root():
+        """기본 drive_root 함수"""
+        return str(Path.home())
+    
+    def timestamp(format_type='yymmdd_HHMMSS'):
+        """기본 timestamp 함수"""
+        from datetime import datetime
+        return datetime.now().strftime('%y%m%d_%H%M%S')
+
+# 로깅 설정
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# 0. OpenAI API 키 설정
+# 콘솔 핸들러 추가 (스크립트 실행 시 로그 출력)
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
+# 0. OpenAI API 키 설정
 openai_api_key = None
 if IS_COLAB:
     from google.colab import userdata
@@ -45,21 +88,11 @@ else:
 
 if openai_api_key:
     openai_api_key = openai_api_key.strip()
-    os.environ["OPENAI_API_KEY"] = openai_api_key # LangChain
+    os.environ["OPENAI_API_KEY"] = openai_api_key
     logger.debug(f"OPENAI_API_KEY [{openai_api_key[:4]}****{openai_api_key[-4:]}] 환경변수 설정 완료")
     logger.info("OPENAI_API_KEY 설정")
 else:
     logger.warning("openai_api_key가 설정되지 않아 OpenAI 로그인 생략됨")
-
-# 프로젝트 루트 기준 경로 설정
-if IS_COLAB:
-    data_path = str(Path(drive_root()) / 'data')
-else:
-    # 로컬 환경: src 폴더 기준 상위 폴더의 data
-    project_root = Path(__file__).parent.parent
-    data_path = str(project_root / 'data')
-    
-logger.info(f'데이터 경로 설정 완료: {data_path}')
 
 # 1. 데이터 구조 정의
 @dataclass
@@ -82,8 +115,6 @@ class SearchResult:
     chunk_type: str # 청크 유형
 
 # 2.0 파일 해시 관리 클래스
-
-import hashlib
 
 class FileHashManager:
     """파일 해시 관리 클래스"""
@@ -122,13 +153,33 @@ class FileHashManager:
         return current_hash != stored_hash
 
 # 2. 문서 처리 파이프라인
-
 class DocumentProcessingPipeline:
-    """PDF → Markdown → 청킹 파이프라인"""
+    """PDF → Markdown → 청킹 파이프라인 (콜백 지원)"""
 
-    def __init__(self, chunk_size: int = 600, chunk_overlap: int = 100):
+    def __init__(
+        self,
+        chunk_size: int = 600,
+        chunk_overlap: int = 100,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    ):
+        """
+        Args:
+            chunk_size: 청크 최대 크기
+            chunk_overlap: 청크 간 중복 크기
+            progress_callback: PDF 변환 진행 상황 콜백 함수
+                호출 시 전달되는 딕셔너리:
+                {
+                    'file_name': str,
+                    'current_page': int,
+                    'total_pages': int,
+                    'page_content_length': int,
+                    'status': str  # 'processing', 'empty', 'failed'
+                }
+        """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.progress_callback = progress_callback
+        
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -136,7 +187,7 @@ class DocumentProcessingPipeline:
             length_function=len,
         )
         self.hash_manager = FileHashManager()
-        self.processed_files = {}  # 파일 해시 저장소
+        self.processed_files = {}
         
     def is_file_already_processed(self, file_path: str) -> bool:
         """
@@ -155,91 +206,146 @@ class DocumentProcessingPipeline:
         self.processed_files[file_hash] = file_path
         return False
         
-    def save_markdown_from_pdf(self, pdf_path: str, markdown_text: str) -> None:
+    def save_markdown_from_pdf(self, pdf_path: str, pages_data: List[Dict]) -> None:
         """
-        PDF 파일명을 기반으로 마크다운 문서를 저장합니다.
+        PDF 페이지별 데이터를 마크다운으로 저장합니다.
 
         Args:
             pdf_path (str): PDF 파일 경로
-            markdown_text (str): 변환된 마크다운 텍스트
+            pages_data (List[Dict]): 페이지별 {'page_num', 'content'} 딕셔너리 리스트
         """
-        # PDF 파일명을 기반으로 .md 확장자로 변경
         md_path = Path(pdf_path).with_suffix('.md')
         
-        # 마크다운 파일 저장
         with open(md_path, 'w', encoding='utf-8') as md_file:
-            md_file.write(markdown_text)
+            for page_data in pages_data:
+                page_num = page_data['page_num']
+                content = page_data['content']
+                md_file.write(f"\n\n--- 페이지 {page_num} ---\n\n")
+                md_file.write(content)
         
-        logger.debug(f"Markdown 파일 저장 완료: {md_path}")        
+        logger.debug(f"Markdown 파일 저장 완료: {md_path}")
 
-    def markdown_with_progress(self, pdf_path: str) -> str:
+    def markdown_with_progress(self, pdf_path: str) -> List[Dict]:
         """
-        PDF를 Markdown으로 변환하면서 진행 상황을 표시합니다.
-        10페이지 이상은 병렬 처리, 미만은 순차 처리
-
+        PDF를 페이지별로 Markdown 변환 (진행 상황 콜백 지원)
+        
         Args:
             pdf_path (str): PDF 파일 경로
-
-        Returns:
-            str: 변환된 Markdown 텍스트
-        """
-        import fitz
-        #from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # PDF 페이지 수 확인
+        Returns:
+            List[Dict]: [{'page_num': int, 'content': str}, ...]
+        """        
+        file_name = Path(pdf_path).name
+        
         with fitz.open(pdf_path) as doc:
             total_pages = len(doc)
 
-        markdown_pages = []
+        if RUN_PROCESS['심플데이타']:
+            total_pages = min(total_pages, 10)
+
+        pages_data = []
         with tqdm(total=total_pages, desc="PDF to Markdown", unit="page") as pbar:
+            pbar_end_str = ""
+            progress_callback_data = {
+                            'file_name': file_name,
+                            'current_page': 1,
+                            'total_pages': 1,
+                            'page_content_length': 0,
+                            'status': "",
+                            'error': ""
+                        }
             for page_num in range(total_pages):
                 try:
                     markdown = pymupdf4llm.to_markdown(
                         doc=pdf_path,
                         pages=[page_num]
                     )
-                    markdown_pages.append((page_num, markdown))
-                except Exception as e:
-                    logger.warning(f"페이지 {page_num} 순차 변환 실패: {e}")
-                    markdown_pages.append((page_num, ""))
-                finally:
-                    pbar.update(1)
-        
-        markdown_pages.sort(key=lambda x: x[0])
-        return "\n\n".join([md for _, md in markdown_pages if md])
+                    
+                    # 전처리
+                    markdown = self.clean_markdown_text(markdown)
+                    
+                    # 상태 판단
+                    if not markdown.strip():
+                        status = 'empty'
+                        pbar_end_str = f"empty"
+                        markdown = f"[빈 페이지]"
+                    else:
+                        status = 'processing'
+                        pbar_end_str = f"len={len(markdown)}"
+                    
+                    pages_data.append({
+                        'page_num': page_num + 1,
+                        'content': markdown
+                    })
+                    
+                    progress_callback_data.update({
+                        'file_name': file_name,
+                        'current_page': page_num + 1,
+                        'total_pages': total_pages,
+                        'page_content_length': len(markdown),
+                        'status': status,
+                        'error': ""
+                    })
 
-    def pdf_to_markdown(self, pdf_path: str) -> Tuple[str, Dict]:
+                except Exception as e:
+                    status = 'failed'
+                    pbar_end_str = f"err={e}"
+                    logger.warning(pbar_end_str)
+                    
+                    pages_data.append({
+                        'page_num': page_num + 1,
+                        'content': "[변환 실패]"
+                    })
+                    
+                    progress_callback_data.update({
+                        'file_name': file_name,
+                        'current_page': page_num + 1,
+                        'total_pages': total_pages,
+                        'page_content_length': 0,
+                        'status': status,
+                        'error': str(e)
+                    })
+                finally:
+                    pbar.set_postfix_str(pbar_end_str)
+                    pbar.update(1)
+                    # 콜백 호출
+                    if self.progress_callback:
+                        self.progress_callback(progress_callback_data)
+        
+        return pages_data
+
+    def pdf_to_markdown(self, pdf_path: str) -> Tuple[List[Dict], Dict]:
         """
-        PDF를 Markdown으로 변환
+        PDF를 페이지별 Markdown으로 변환
 
         Args:
             pdf_path: PDF 파일 경로
 
         Returns:
-            (markdown_text, metadata)
+            (pages_data, metadata)
+            - pages_data: [{'page_num': int, 'content': str}, ...]
+            - metadata: 파일 정보
         """
         logger.debug(f"PDF 변환 중: {Path(pdf_path).name}")
 
-        # pymupdf4llm을 사용하여 PDF를 Markdown으로 변환
-        #markdown_text = pymupdf4llm.to_markdown(pdf_path)
-        markdown_text = self.markdown_with_progress(pdf_path)
+        # 페이지별 변환
+        pages_data = self.markdown_with_progress(pdf_path)
         
-        # 전처리 추가
-        markdown_text = self.clean_markdown_text(markdown_text)
-
-        self.save_markdown_from_pdf(pdf_path, markdown_text)
+        # Markdown 파일 저장
+        self.save_markdown_from_pdf(pdf_path, pages_data)
 
         # 파일 해시 계산
         file_hash = self.hash_manager.calculate_file_hash(pdf_path)
+        
         # 메타데이터 추출
         metadata = {
             'file_name': Path(pdf_path).name,
             'file_path': pdf_path,
             'file_hash': file_hash,
-            'page_count': markdown_text.count('---')  # 페이지 구분자 기준
+            'page_count': len(pages_data)
         }
 
-        return markdown_text, metadata
+        return pages_data, metadata
 
     def clean_markdown_text(self, text: str) -> str:
         """
@@ -267,17 +373,18 @@ class DocumentProcessingPipeline:
 
     def chunk_document(
         self, 
-        markdown_text: str, 
+        pages_data: List[Dict],
         file_name: str,
         file_path: str,
-        file_hash: str  # 추가
+        file_hash: str
     ) -> List[Document]:
         """
-        Markdown 문서를 청킹
+        페이지별 데이터를 청킹 (페이지 번호 보존)
 
         Args:
-            markdown_text: Markdown 텍스트
+            pages_data: [{'page_num': int, 'content': str}, ...]
             file_name: 파일명
+            file_path: 파일 경로
             file_hash: 파일 해시 값
 
         Returns:
@@ -285,21 +392,25 @@ class DocumentProcessingPipeline:
         """
         logger.debug(f"문서 청킹 중: {file_name}")
 
-        pages = markdown_text.split('-----')
         chunks = []
         chunk_index = 0
 
-        for page_num, page_content in enumerate(pages, 1):
-            if not page_content.strip():
+        for page_data in pages_data:
+            page_num = page_data['page_num']
+            page_content = page_data['content']
+            
+            # 빈 페이지 스킵
+            if not page_content.strip() or page_content == "[빈 페이지]":
                 continue
 
+            # 페이지 청킹
             page_chunks = self.text_splitter.create_documents(
                 texts=[page_content],
                 metadatas=[{
                     'file_name': file_name,
                     'file_path': file_path,
                     'file_hash': file_hash,
-                    'page': page_num,
+                    'page': page_num,  # 정확한 PDF 페이지 번호
                     'chunk_type': 'original',
                     'chunk_index': chunk_index,
                 }]
@@ -323,11 +434,10 @@ class DocumentProcessingPipeline:
         Returns:
             청크된 Document 리스트
         """
-        markdown_text, metadata = self.pdf_to_markdown(pdf_path)
+        pages_data, metadata = self.pdf_to_markdown(pdf_path)
         
-        # file_hash 전달 추가
         chunks = self.chunk_document(
-            markdown_text, 
+            pages_data,
             metadata['file_name'],
             metadata['file_path'],
             metadata['file_hash'],
@@ -348,8 +458,6 @@ class DocumentProcessingPipeline:
         chunk_data = [
             {
                 "파일명": chunk.metadata['file_name'],
-                "파일 경로": chunk.metadata.get('file_path', 'unknown'),
-                "파일 해시": chunk.metadata.get('file_hash', 'unknown'),
                 "페이지": chunk.metadata['page'],
                 "청크 인덱스": chunk.metadata['chunk_index'],
                 "청크 길이": len(chunk.page_content),
@@ -363,16 +471,41 @@ class DocumentProcessingPipeline:
         return df
 
 # 3. 요약 파이프라인
-
 class SummaryPipeline:
-    """문서 요약 파이프라인 (원본의 20% 크기)"""
+    """문서 요약 파이프라인 (원본의 20% 크기, 콜백 지원)"""
 
-    def __init__(self, llm, summary_ratio: float = 0.2, summary_overlap_ratio: float = 0.1):
+    def __init__(
+        self,
+        llm,
+        summary_ratio: float = 0.2,
+        summary_overlap_ratio: float = 0.1,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    ):
+        """
+        Args:
+            llm: LangChain LLM 인스턴스
+            summary_ratio: 요약 비율 (기본값: 0.2 = 20%)
+            summary_overlap_ratio: 요약 오버랩 비율 (미사용)
+            progress_callback: 요약 진행 상황 콜백 함수
+                호출 시 전달되는 딕셔너리:
+                {
+                    'current_chunk': int,
+                    'total_chunks': int,
+                    'file_name': str,
+                    'page': int,
+                    'original_length': int,
+                    'summary_length': int,
+                    'compression_ratio': float,
+                    'status': str,  # 'processing', 'completed', 'failed'
+                    'error': str (optional)
+                }
+        """
         self.llm = llm
         self.summary_ratio = summary_ratio
         self.summary_overlap_ratio = summary_overlap_ratio
+        self.progress_callback = progress_callback
 
-    def summarize_chunk(self, chunk: Document) -> str:
+    def summarize_chunk(self, chunk: Document, min_length: int = 100) -> str:
         """
         단일 청크 요약
 
@@ -382,6 +515,12 @@ class SummaryPipeline:
         Returns:
             요약된 텍스트
         """
+        original_length = len(chunk.page_content)
+        
+        # 짧은 청크는 원본 반환
+        if original_length <= min_length:
+            return chunk.page_content
+
         target_length = int(len(chunk.page_content) * self.summary_ratio)
 
         prompt = f"""다음 텍스트를 약 {target_length}자 정도로 핵심 내용만 요약해주세요.
@@ -397,7 +536,7 @@ class SummaryPipeline:
 
     def create_summary_chunks(self, original_chunks: List[Document]) -> List[Document]:
         """
-        원본 청크들의 요약본 생성
+        원본 청크들의 요약본 생성 (진행 상황 콜백 지원)
 
         Args:
             original_chunks: 원본 청크 리스트
@@ -405,40 +544,92 @@ class SummaryPipeline:
         Returns:
             요약된 청크 리스트
         """
-        logger.debug(f"{len(original_chunks)}개 청크 요약 중...")
+        total_chunks = len(original_chunks)
+        logger.debug(f"{total_chunks}개 청크 요약 중...")
 
         summary_chunks = []
 
-        for idx, chunk in enumerate(original_chunks):
-            logger.debug(f"  요약 진행: {idx + 1}/{len(original_chunks)}")
-
-            # 청크 요약
-            summary_text = self.summarize_chunk(chunk)
-            
-            logger.debug(f"원본 : {chunk}")
-            logger.debug(f"요약 : {summary_text}")
-
-            # 요약 청크 생성
-            summary_chunk = Document(
-                page_content=summary_text,
-                metadata={
-                    'file_name': chunk.metadata['file_name'],
-                    'file_path': chunk.metadata['file_path'],
-                    'file_hash': chunk.metadata['file_hash'],
-                    'page': chunk.metadata['page'],
-                    'chunk_type': 'summary',
-                    'chunk_index': len(summary_chunks),
-                    'original_chunk_index': chunk.metadata['chunk_index']
+        with tqdm(total=total_chunks, desc="청크 요약", unit="chunk") as pbar:
+            pbar_end_str = ""
+            for idx, chunk in enumerate(original_chunks):
+                current_chunk = idx + 1
+                file_name = chunk.metadata.get('file_name', 'unknown')
+                page = chunk.metadata.get('page', 0)
+                original_length = len(chunk.page_content)
+                
+                # 진행 상황 딕셔너리 초기화
+                progress_info = {
+                    'current_chunk': current_chunk,
+                    'total_chunks': total_chunks,
+                    'file_name': file_name,
+                    'page': page,
+                    'original_length': original_length,
+                    'summary_length': 0,
+                    'compression_ratio': 0.0,
+                    'status': 'processing',
+                    'error': ''
                 }
-            )
 
-            summary_chunks.append(summary_chunk)
+                try:
+                    # 청크 요약
+                    summary_text = self.summarize_chunk(chunk)
+                    summary_length = len(summary_text)
+                    compression_ratio = summary_length / original_length if original_length > 0 else 0.0
+                    
+                    # 상태 업데이트
+                    progress_info.update({
+                        'summary_length': summary_length,
+                        'compression_ratio': compression_ratio,
+                        'status': 'completed'
+                    })
+
+                    # 요약 청크 생성
+                    summary_chunk = Document(
+                        page_content=summary_text,
+                        metadata={
+                            'file_name': file_name,
+                            'file_path': chunk.metadata.get('file_path', ''),
+                            'file_hash': chunk.metadata.get('file_hash', ''),
+                            'page': page,
+                            'chunk_type': 'summary',
+                            'chunk_index': len(summary_chunks),
+                            'original_chunk_index': chunk.metadata['chunk_index']
+                        }
+                    )
+
+                    summary_chunks.append(summary_chunk)
+                    
+                    # tqdm 포스트픽스 업데이트
+                    if len(file_name) > 5:
+                        pbar_end_str = f"{file_name[:5]}..."
+                    else:
+                        pbar_end_str = f"{file_name}"
+                    pbar_end_str += f"p.{page} | "
+                    pbar_end_str += f"{original_length}→{summary_length}자 "
+                    pbar_end_str += f"({compression_ratio:.1%})"
+
+                except Exception as e:
+                    status = 'failed'
+                    error_msg = str(e)
+                    pbar_end_str = f"failed: {error_msg[:30]}"
+                    
+                    progress_info.update({
+                        'status': status,
+                        'error': error_msg
+                    })
+                    
+                finally:
+                    # 콜백 호출
+                    pbar.set_postfix_str(pbar_end_str)
+                    pbar.update(1)
+                    
+                    if self.progress_callback:
+                        self.progress_callback(progress_info)
 
         logger.debug(f"요약 완료: {len(summary_chunks)}개 청크")
         return summary_chunks
 
 # 4. 2단계 검색 파이프라인
-
 class TwoStageSearchPipeline:
     """2단계 검색 파이프라인"""
 
@@ -446,7 +637,7 @@ class TwoStageSearchPipeline:
         self,
         summary_vectorstore: FAISS,
         original_vectorstore: FAISS,
-        similarity_threshold: float = 0.5,  # 유사도 기준 (0.5 = 중간)
+        similarity_threshold: float = 0.75,  # 수정: 0.5 → 0.75 (더 엄격하게)
         top_k_summary: int = 5,
         top_k_final: int = 2,
         score_gap_threshold: float = 0.15
@@ -459,7 +650,18 @@ class TwoStageSearchPipeline:
         self.score_gap_threshold = score_gap_threshold
 
     def _distance_to_similarity(self, distance: float) -> float:
-        """거리 → 유사도 변환 (0~1, 높을수록 유사)"""
+        """
+        거리 → 유사도 변환
+        
+        FAISS L2 거리 특성:
+        - 0에 가까울수록: 매우 유사
+        - 1.0 이상: 관련성 낮음
+        
+        변환 전략:
+        - distance < 0.5 → 0.8 이상 (우수)
+        - distance = 1.0 → 0.5 (보통)
+        - distance > 2.0 → 0.33 이하 (낮음)
+        """
         return 1.0 / (1.0 + distance)
 
     def search(self, query: str) -> List[SearchResult]:
@@ -604,7 +806,6 @@ class TwoStageSearchPipeline:
         return [top_result]
 
 # 5. DB 관리 파이프라인
-
 class VectorStoreManager:
     """VectorStore 관리 클래스 - 저장/로드/수정/삭제"""
 
@@ -653,7 +854,27 @@ class VectorStoreManager:
         original_path = self.db_path / f"{name}_original"
 
         if not summary_path.exists() or not original_path.exists():
-            raise FileNotFoundError(f"VectorStore '{name}' not found")
+            logger.warning(f"VectorStore '{name}' 미존재 — 빈 VectorStore 생성")
+            # 더미 문서로 빈 FAISS 생성 (최소 1개 문서 필요)
+            from langchain_core.documents import Document
+            
+            dummy_doc = Document(
+                page_content="[초기화용 더미 문서]",
+                metadata={
+                    'file_name': '__init__',
+                    'page': 0,
+                    'chunk_type': 'dummy',
+                    'chunk_index': 0
+                }
+            )
+            summary_vectorstore = FAISS.from_documents([dummy_doc], self.embeddings)
+            original_vectorstore = FAISS.from_documents([dummy_doc], self.embeddings)
+            # 즉시 저장 (다음 로드 시 사용)
+            summary_vectorstore.save_local(str(summary_path))
+            original_vectorstore.save_local(str(original_path))
+            
+            logger.debug(f"빈 VectorStore 생성 및 저장 완료: {name}")
+            return summary_vectorstore, original_vectorstore
 
         summary_vectorstore = FAISS.load_local(
             str(summary_path),
@@ -696,15 +917,14 @@ class VectorStoreManager:
 
 
 # 6. 통합 VectorStore 클래스
-
 class VectorStore:
     """
-    MVP VectorStore - 통합 클래스
-
+    VectorStore - 통합 클래스
+    
     Features:
-    - PDF → Markdown 변환
+    - PDF → Markdown 변환 (진행 상황 콜백)
     - 600자 청킹 (오버랩 100)
-    - 20% 요약 생성
+    - 20% 요약 생성 (진행 상황 콜백)
     - 2단계 검색 (요약문 → 원본)
     - DB 저장/로드/관리
     """
@@ -714,23 +934,34 @@ class VectorStore:
         llm,
         chunk_size: int = 600,
         chunk_overlap: int = 100,
-        db_path: Optional[str] = None
+        db_path: str = "./vector_db",
+        embedding_batch_size: int = 100,
+        pdf_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        summary_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ):
+        """
+        Args:
+            llm: LangChain LLM 인스턴스
+            chunk_size: 청크 최대 크기
+            chunk_overlap: 청크 오버랩 크기
+            db_path: 벡터 DB 저장 경로
+            embedding_batch_size: 임베딩 배치 크기
+            pdf_progress_callback: PDF 변환 진행 콜백
+            summary_progress_callback: 요약 진행 콜백
+        """
         self.llm = llm
-        self.embeddings = OpenAIEmbeddings()
+        self.embeddings = OpenAIEmbeddings(chunk_size=embedding_batch_size)
 
-        # db_path가 None이면 프로젝트 구조에 맞는 기본 경로 사용
-        if db_path is None:
-            if IS_COLAB:
-                db_path = str(Path(drive_root()) / 'data' / 'vectorstore')
-            else:
-                # 로컬: src 기준 상위의 data/vectorstore
-                project_root = Path(__file__).parent.parent
-                db_path = str(project_root / 'data' / 'vectorstore')
-
-        # 파이프라인 초기화
-        self.doc_pipeline = DocumentProcessingPipeline(chunk_size, chunk_overlap)
-        self.summary_pipeline = SummaryPipeline(llm)
+        # 파이프라인 초기화 (콜백 등록)
+        self.doc_pipeline = DocumentProcessingPipeline(
+            chunk_size, 
+            chunk_overlap,
+            progress_callback=pdf_progress_callback
+        )
+        self.summary_pipeline = SummaryPipeline(
+            llm,
+            progress_callback=summary_progress_callback
+        )
         self.db_manager = VectorStoreManager(db_path)
 
         # VectorStore
@@ -738,14 +969,18 @@ class VectorStore:
         self.original_vectorstore: Optional[FAISS] = None
         self.search_pipeline: Optional[TwoStageSearchPipeline] = None
 
-    def add_documents(self, pdf_paths: List[str]) -> None:
+    def add_documents(self, pdf_paths: List[str], batch_size: int = 100) -> None:
         """
-        PDF 문서 추가 (해시 기반 중복 제거)
+        PDF 문서 추가 (해시 기반 중복 제거 + 더미 문서 자동 삭제)
         
         Args:
             pdf_paths: PDF 파일 경로 리스트
+            batch_size: 임베딩 배치 크기
         """
         logger.debug("문서 추가 시작")
+        
+        # 더미 문서 검증 및 제거
+        self._remove_dummy_if_exists()
         
         all_original_chunks = []
         all_summary_chunks = []
@@ -772,16 +1007,32 @@ class VectorStore:
         logger.debug("VectorStore 생성 중...")
 
         if self.original_vectorstore is None:
-            self.original_vectorstore = FAISS.from_documents(
-                all_original_chunks, self.embeddings
-            )
-            self.summary_vectorstore = FAISS.from_documents(
-                all_summary_chunks, self.embeddings
-            )
+            # 초기 생성은 첫 배치만
+            first_batch = all_original_chunks[:batch_size]
+            self.original_vectorstore = FAISS.from_documents(first_batch, self.embeddings)
+            
+            first_summary_batch = all_summary_chunks[:batch_size]
+            self.summary_vectorstore = FAISS.from_documents(first_summary_batch, self.embeddings)
+            
+            # 나머지 배치 추가
+            for i in range(batch_size, len(all_original_chunks), batch_size):
+                batch = all_original_chunks[i:i+batch_size]
+                self.original_vectorstore.add_documents(batch)
+                
+            for i in range(batch_size, len(all_summary_chunks), batch_size):
+                batch = all_summary_chunks[i:i+batch_size]
+                self.summary_vectorstore.add_documents(batch)
         else:
-            # 기존 VectorStore에 추가
-            self.original_vectorstore.add_documents(all_original_chunks)
-            self.summary_vectorstore.add_documents(all_summary_chunks)
+            # 기존 VectorStore에 배치로 추가
+            for i in range(0, len(all_original_chunks), batch_size):
+                batch = all_original_chunks[i:i+batch_size]
+                self.original_vectorstore.add_documents(batch)
+                logger.debug(f"원본 배치 {i//batch_size + 1} 추가 완료")
+                
+            for i in range(0, len(all_summary_chunks), batch_size):
+                batch = all_summary_chunks[i:i+batch_size]
+                self.summary_vectorstore.add_documents(batch)
+                logger.debug(f"요약 배치 {i//batch_size + 1} 추가 완료")
 
         # 4. 검색 파이프라인 초기화
         self.search_pipeline = TwoStageSearchPipeline(
@@ -792,6 +1043,47 @@ class VectorStore:
         logger.debug("문서 추가 완료!")
         logger.debug(f"  - 원본 청크: {len(all_original_chunks)}개")
         logger.debug(f"  - 요약 청크: {len(all_summary_chunks)}개")
+
+
+    def _remove_dummy_if_exists(self) -> None:
+        """
+        더미 문서 검증 및 제거 (DB 크기 1일 때만)
+        
+        작동 조건:
+        - original_vectorstore 크기가 정확히 1
+        - 해당 문서의 file_name이 '__init__'
+        - chunk_type이 'dummy'
+        
+        제거 방법:
+        - 기존 DB 삭제 후 빈 VectorStore로 재초기화
+        """
+        if self.original_vectorstore is None:
+            return
+        
+        # docstore 크기 확인
+        doc_count = len(self.original_vectorstore.docstore._dict)
+        
+        if doc_count != 1:
+            logger.debug(f"더미 검사 스킵: DB 크기 {doc_count}개")
+            return
+        
+        # 유일한 문서 추출
+        first_doc = list(self.original_vectorstore.docstore._dict.values())[0]
+        
+        # 더미 문서 검증
+        if (first_doc.metadata.get('file_name') == '__init__' and 
+            first_doc.metadata.get('chunk_type') == 'dummy'):
+            
+            logger.info("더미 문서 감지 — 제거 후 재초기화")
+            
+            # VectorStore 초기화
+            self.original_vectorstore = None
+            self.summary_vectorstore = None
+            self.search_pipeline = None
+            
+            logger.debug("더미 제거 완료: VectorStore 초기화됨")
+        else:
+            logger.debug("더미 문서 아님 — 제거 생략")
 
     def search(self, query: str) -> List[Dict]:
         """
@@ -937,6 +1229,98 @@ class VectorStore:
         # 포맷팅된 결과 반환
         return f"질의: {query}\n답변: {answer}"
     
+    def get_sample(
+        self,
+        file_name: str,
+        chunk_index: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        특정 파일의 특정 청크 정보 조회
+        
+        Args:
+            file_name (str): 파일명 (예: "sample_korean.pdf")
+            chunk_index (int): 청크 인덱스 (0부터 시작)
+        
+        Returns:
+            Dict[str, Any]: 청크 정보 딕셔너리
+            {
+                'file_name': str,
+                'chunk_index': int,
+                'page': int,
+                'original_text': str,
+                'original_length': int,
+                'summary_text': str,
+                'summary_length': int,
+                'compression_ratio': float,
+                'file_hash': str,
+                'metadata': Dict
+            }
+            
+            조회 실패 시 None 반환
+        
+        Examples:
+            >>> info = vector_store.get_sample("sample.pdf", 5)
+            >>> print(f"원본: {info['original_length']}자")
+            >>> print(f"요약: {info['summary_length']}자")
+        """
+        if self.original_vectorstore is None or self.summary_vectorstore is None:
+            logger.warning("VectorStore가 초기화되지 않았습니다.")
+            return None
+        
+        # 원본 청크 검색
+        original_doc = None
+        for doc_id, doc in self.original_vectorstore.docstore._dict.items():
+            if (doc.metadata.get('file_name') == file_name and 
+                doc.metadata.get('chunk_index') == chunk_index):
+                original_doc = doc
+                break
+        
+        if original_doc is None:
+            logger.warning(
+                f"청크를 찾을 수 없습니다: {file_name}, chunk_index={chunk_index}"
+            )
+            return None
+        
+        # 요약 청크 검색
+        summary_doc = None
+        for doc_id, doc in self.summary_vectorstore.docstore._dict.items():
+            if (doc.metadata.get('file_name') == file_name and 
+                doc.metadata.get('original_chunk_index') == chunk_index):
+                summary_doc = doc
+                break
+        
+        # 결과 구성
+        original_text = original_doc.page_content
+        original_length = len(original_text)
+        
+        summary_text = summary_doc.page_content if summary_doc else "[요약 없음]"
+        summary_length = len(summary_text) if summary_doc else 0
+        
+        compression_ratio = (
+            summary_length / original_length 
+            if original_length > 0 else 0.0
+        )
+        
+        result = {
+            'file_name': file_name,
+            'chunk_index': chunk_index,
+            'page': original_doc.metadata.get('page', 0),
+            'original_text': original_text,
+            'original_length': original_length,
+            'summary_text': summary_text,
+            'summary_length': summary_length,
+            'compression_ratio': compression_ratio,
+            'file_hash': original_doc.metadata.get('file_hash', 'N/A'),
+            'metadata': original_doc.metadata
+        }
+        
+        logger.debug(
+            f"청크 조회 완료: {file_name} [청크 {chunk_index}] "
+            f"원본 {original_length}자 → 요약 {summary_length}자 "
+            f"({compression_ratio:.1%})"
+        )
+        
+        return result
     
     def get_metadata_info(self) -> pd.DataFrame:
         """
@@ -982,61 +1366,127 @@ class VectorStore:
         
         df = pd.DataFrame(result)
         logger.debug(f"총 {len(df)}개 파일 메타데이터 조회 완료")
-        return df    
+        return df
+    
+    def print_sample(self, file_name: str, chunk_index: int) -> None:
+        """
+        청크 정보를 보기 좋게 출력
+        
+        Args:
+            file_name (str): 파일명
+            chunk_index (int): 청크 인덱스
+        
+        Examples:
+            >>> vector_store.print_sample("sample.pdf", 3)
+        """
+        info = self.get_sample(file_name, chunk_index)
+        
+        if info is None:
+            logger.info("청크를 찾을 수 없습니다.")
+            return
+        
+        logger.info("." * 80)
+        logger.info(f"파일명: {info['file_name']}")
+        logger.info(f"청크 인덱스: {info['chunk_index']} | 페이지: {info['page']}")
+        logger.info(f"압축률: {info['compression_ratio']:.1%} "
+            f"({info['original_length']}자 → {info['summary_length']}자)")
+        logger.info("." * 80)
+        
+        logger.info("[원본 텍스트]")
+        logger.info(info['original_text'][:500])
+        if info['original_length'] > 500:
+            logger.info(f"... (총 {info['original_length']}자)")
+
+        logger.info("." * 80)
+        logger.info("[요약 텍스트]")
+        logger.info(info['summary_text'][:300])
+        if info['summary_length'] > 300:
+            logger.info(f"... (총 {info['summary_length']}자)")
+
+        logger.info("." * 80)
 
 # 7. 사용
 if __name__ == "__main__":
-    from langchain_openai import ChatOpenAI
+    def simple_progress_callback(info: Dict[str, Any]) -> None:
+        """간단한 진행 상황 출력"""
+        progress_message = (
+            f"[{info['file_name']}] "
+            f"{info['current_page']}/{info['total_pages']} "
+            f"({info['status']}) "
+            f"{info['page_content_length']}자"
+        )
+        print(f"{progress_message}")
+            
+    def summary_progress_callback(info: Dict[str, Any]) -> None:
+        """요약 진행 상황 출력"""
+        progress_message = ""
+        if info['status'] == 'completed':
+            progress_message =(
+                f"VectorStore "
+                f"[{info['file_name']}] "
+                f"청크 {info['current_chunk']}/{info['total_chunks']} | "
+                f"페이지 {info['page']} | "
+                f"압축률 {info['compression_ratio']:.1%} "
+                f"({info['original_length']}→{info['summary_length']}자)"
+            )
+        elif info['status'] == 'failed':
+            progress_message =(
+                f"VectorStore "
+                f"[{info['file_name']}] "
+                f"청크 {info['current_chunk']} 요약 실패: {info['error']}"
+            )
+        print(f"{progress_message}")
 
-    # LLM 초기화
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    def test_main():
+        from langchain_openai import ChatOpenAI
 
-    # VectorStore 생성 (db_path=None으로 자동 경로 설정)
-    vector_store = VectorStore(
-        llm=llm,
-        chunk_size=600,
-        chunk_overlap=100,
-        db_path=None  # 자동으로 data/vectorstore 경로 사용
-    )
-    
-    logger.info(f"VectorStore DB 경로: {vector_store.db_manager.db_path}")
-    
-    # 기존 벡터스토어 로드 시도
-    try:
+        data_path = str(Path(drive_root()) / 'data')
+        logger.info(f'데이터 경로 설정 완료: {data_path}')
+
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        db_path = str(Path(data_path) / r'mission14_vectorstore_db')
+        vector_store = VectorStore(llm=llm, chunk_size=600, chunk_overlap=100, db_path=db_path)
         vector_store.load("my_knowledge_base")
-        metadata_info = vector_store.get_metadata_info()
-        print("\n=== 기존 벡터스토어 메타데이터 ===")
-        print(metadata_info)
-    except FileNotFoundError:
-        logger.info("기존 벡터스토어가 없습니다. 새로 생성합니다.")
-
-    # 문서 추가 (예시)
-    # data_path는 전역변수로 이미 설정됨
-    from pathlib import Path
-    pdf_path = Path(data_path) / 'sample_korean.pdf'
-    
-    if pdf_path.exists():
-        pdf_files = [str(pdf_path)]
+        pdf_files = []
+        pdf_files.append(str(Path(data_path) / r'2024년+원천징수의무자를+위한+연말정산+신고안내.pdf'))
         vector_store.add_documents(pdf_files)
-        
-        # 저장
         vector_store.save("my_knowledge_base")
-        logger.info("벡터스토어 저장 완료")
-    else:
-        logger.warning(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
-        logger.info("예제 PDF를 data/ 폴더에 추가하거나 기존 벡터스토어를 사용하세요.")
 
-    # 검색 예시
-    if vector_store.search_pipeline:
-        query = "RAG의 핵심 원리는 무엇인가요?"
+        metadata_info = vector_store.get_metadata_info()
+        metadata_info.head()
+
+        # query = "RAG의 핵심 원리는 무엇인가요?"
+        querys = [
+            "원천징수는 무엇인가요?",        # ✓ 문서에 존재
+            "HPGP는 무엇인가?",              # ✗ 문서에 없음 → 필터링되어야 함
+            "월세공제는 무엇인가요?",        # ✓ 문서에 존재
+            "블록체인 기술이란?",            # ✗ 문서에 없음 → 필터링되어야 함
+        ]
         
-        # RAG 컨텍스트 생성
-        context = vector_store.get_rag_context(query)
-        
-        # RAG 답변 생성
-        result = vector_store.generate_answer(query, context=context)
-        print("\n" + "="*60)
-        print(result)
-        print("="*60 + "\n")
-    else:
-        logger.warning("검색 파이프라인이 초기화되지 않았습니다. 먼저 문서를 추가하세요.")
+        for query in querys:
+            results = vector_store.search(query)
+
+            # 결과 출력
+            print("."*60)
+            print("검색 결과")
+            print("."*60)
+            for result in results:
+                print(f"[{result['rank']}위] {result['file_name']} (p.{result['page']}) - 유사도: {result['score']:.3f}")
+                print(f"{result['content'][:50]}... len={len(result['content'])}")
+                print("."*30)
+
+            # RAG 컨텍스트 생성
+            context = vector_store.get_rag_context(query)
+            print("."*60)
+            print("RAG 컨텍스트")
+            print("."*60)
+            print(f"{context[:50]}... len={len(context)}")
+
+            # RAG 답변 생성
+            result = vector_store.generate_answer(query, context=context)
+            print("-"*60)
+            print(result)
+            print("="*60)
+
+    logger.setLevel(logging.INFO)
+    test_main()
