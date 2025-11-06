@@ -1195,7 +1195,7 @@ class VectorStore:
             context (Optional[str]): 검색된 컨텍스트 (None이면 자동 검색)
         
         Returns:
-            str: 포맷팅된 질의/답변 문자열
+            str: 답변 문자열 (질의/답변 라벨 제외)
         """
         # context 자동 생성 (옵션)
         if context is None:
@@ -1204,19 +1204,19 @@ class VectorStore:
         
         # context 유효성 검사
         if not context or context.strip() == "":
-            answer = "죄송합니다. 제공된 자료에서 관련 정보를 찾을 수 없습니다."
-            return f"질의: {query}\n답변:\n{answer}"
+            return "죄송합니다. 제공된 자료에서 관련 정보를 찾을 수 없습니다."
         
         # RAG 프롬프트 템플릿
         prompt = f"""다음 컨텍스트를 참고하여 질문에 답변해주세요.
-답변은 컨텍스트 내용에 기반해야 하며, 출처 정보(파일명, 페이지, 유사도)를 포함해주세요.
+    답변은 컨텍스트 내용에 기반해야 하며, 출처 정보(파일명, 페이지, 유사도)를 포함해주세요.
+    답변만 작성하고 '질의:', '답변:' 등의 라벨은 붙이지 마세요.
 
-컨텍스트:
-{context}
+    컨텍스트:
+    {context}
 
-질문: {query}
+    질문: {query}
 
-답변: """
+    답변:"""
         
         # LLM 호출
         try:
@@ -1226,8 +1226,8 @@ class VectorStore:
             logger.error(f"LLM 호출 실패: {e}")
             answer = "답변 생성 중 오류가 발생했습니다."
         
-        # 포맷팅된 결과 반환
-        return f"질의: {query}\n답변: {answer}"
+        # 답변만 반환
+        return answer
     
     def get_sample(
         self,

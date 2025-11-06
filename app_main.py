@@ -389,7 +389,7 @@ def main():
         st.subheader("RAG 기반 답변 생성")
         query_rag = st.text_area(
             "질문을 입력하세요",
-            placeholder="예: RAG 시스템의 장점과 단점을 설명해주세요",
+            placeholder="예: 연말 정산 때 비거주자가 주의할 점을 알려 줘",
             height=100,
             key="rag_query"
         )
