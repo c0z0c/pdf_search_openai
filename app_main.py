@@ -95,9 +95,12 @@ def get_api_key() -> Optional[str]:
         return session_key
     return load_api_key_from_env()
 
-
 def display_api_key_input() -> Optional[str]:
     """API 키 입력 UI를 표시하고 저장합니다."""
+    # 기존 API 키 완전 제거
+    if 'OPENAI_API_KEY' in os.environ:
+        del os.environ['OPENAI_API_KEY']
+    
     st.warning("OpenAI API 키를 입력하세요")
     
     st.markdown("""
@@ -252,8 +255,16 @@ def main():
         if api_key:
             st.success("API 키 로드됨")
             if st.button("API 키 변경", use_container_width=True):
+                # 세션 상태 및 환경 변수 모두 제거
                 if 'openai_api_key' in st.session_state:
                     del st.session_state.openai_api_key
+                if 'OPENAI_API_KEY' in os.environ:
+                    del os.environ['OPENAI_API_KEY']
+                # 벡터스토어도 초기화
+                if 'vector_store' in st.session_state:
+                    st.session_state.vector_store = None
+                if 'db_loaded' in st.session_state:
+                    st.session_state.db_loaded = False
                 st.rerun()
         else:
             display_api_key_input()
