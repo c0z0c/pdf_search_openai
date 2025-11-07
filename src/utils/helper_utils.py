@@ -25,8 +25,18 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pytz
 import requests
-import torch
-from tqdm.notebook import tqdm
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+
+# tqdm.notebook도 optional
+try:
+    from tqdm.notebook import tqdm
+except ImportError:
+    from tqdm import tqdm
 
 try:
     # Colab 환경 여부 확인
